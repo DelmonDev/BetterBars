@@ -532,22 +532,41 @@ end
 function ADDON_API.Cursor:SetCursorImage(image, x, y)
 end
 
+function ADDON_API.Cursor:GetCursorPickedBagItemIndex()
+end
+
+function ADDON_API.Cursor:GetCursorPickedBagItemAmount()
+end
+
 -- ======
 -- Time
 -- ======
 -- Returns milliseconds since the game started
 function ADDON_API.Time:GetUiMsec()
 end
-
+-- Gets a local epoch timestamp
 function ADDON_API.Time:GetLocalTime()
 end
 
 function ADDON_API.Time:PeriodTimeToDate(localTime, period)
 end
+-- Takes an epoch timestamp and returns a date object.
+function ADDON_API.Time:TimeToDate(epochTimestamp)
+end 
+-- Returns in game time.
+function ADDON_API.Time:GetGameTime()
+end
+
 -- ======
 -- Input
 -- ======
 function ADDON_API.Input:IsShiftKeyDown()
+end
+function ADDON_API.Input:IsControlKeyDown()
+end
+function ADDON_API.Input:IsAltKeyDown()
+end
+function ADDON_API.Input:GetMousePos()
 end
 
 
@@ -562,6 +581,9 @@ end
     @returns (nil|true) 
 ]]
 function ADDON_API.Player:ChangeAppellation(type)
+end
+
+function ADDON_API.Player:GetShowingAppellation()
 end
 
 -- ======
@@ -589,7 +611,7 @@ function ADDON_API:DoIn(msec, callback)
 end
 
 --[[
-    Emits an event. We recommend using event names like "ADDON_MY_EVENT" so that other addons don't get tripped.
+        s an event. We recommend using event names like "ADDON_MY_EVENT" so that other addons don't get tripped.
 ]]
 function ADDON_API:Emit(event, ...)
 end
@@ -600,6 +622,10 @@ end
 -- ======
 
 function ADDON_API.Ability:GetBuffTooltip(buffId, itemLevel)
+end
+function ADDON_API.Ability:GetAbilityFromView(index)
+end
+function ADDON_API.Ability:IsActiveAbility(ability)
 end
 
 -- ======
@@ -654,7 +680,10 @@ end
 -- Equipment
 -- ======
 
-function ADDON_API.Equipment:GetEquippedItemInfo(slotIdx)
+function ADDON_API.Equipment:GetEquippedItemTooltipInfo(slotIdx)
+end
+
+function ADDON_API.Equipment:GetEquippedItemTooltipText(unit, slotIdx)
 end
 
 --- ======
@@ -666,5 +695,16 @@ end
 
 function ADDON_API.SiegeWeapon:GetSiegeWeaponTurnSpeed()
 end
+
+--- =====
+--- ItemEnchant
+--- This module has to do with everything in the "Enchanting" window. (regrading, synthesis, etc.)
+--- =====
+
+--- =====
+--- Map
+--- =====
+function ADDON_API.Map:ToggleMapWithPortal(portal_zone_id, x, y, z)
+end 
 
 return ADDON_API
