@@ -13,16 +13,16 @@ local colorPopup = nil
 
 -- Debug helper
 local function debugLog(message)
-    if api.Log and api.Log.Info then
-        api.Log:Info("BetterBars: " .. message)
-    end
+    -- if api.Log and api.Log.Info then
+    --     api.Log:Info("BetterBars: " .. message)
+    -- end
 end
 
 -- Error helper
 local function errorLog(message)
-    if api.Log and api.Log.Err then
-        api.Log:Err("BetterBars: " .. message)
-    end
+    -- if api.Log and api.Log.Err then
+    --     api.Log:Err("BetterBars: " .. message)
+    -- end
 end
 
 -- Function to hide color popup
@@ -222,12 +222,12 @@ local colorPalette = {
 -- Function to create color picker button
 local function createColorPickButton(id, parent, color, x, y)
     -- Add Debug Log Start
-    api.Log:Info("BetterBars: createColorPickButton START - id: " .. id)
+    -- api.Log:Info("BetterBars: createColorPickButton START - id: " .. id)
     if not color or type(color) ~= "table" then
-         api.Log:Err("BetterBars: createColorPickButton - Invalid color data for id: " .. id .. ". Color Type: " .. type(color))
+         -- api.Log:Err("BetterBars: createColorPickButton - Invalid color data for id: " .. id .. ". Color Type: " .. type(color))
          return {} -- Return empty table to avoid downstream errors
     end
-     api.Log:Info("BetterBars: createColorPickButton - Color for " .. id .. ": r=" .. tostring(color.r) .. ", g=" .. tostring(color.g) .. ", b=" .. tostring(color.b) .. ", a=" .. tostring(color.a))
+     -- api.Log:Info("BetterBars: createColorPickButton - Color for " .. id .. ": r=" .. tostring(color.r) .. ", g=" .. tostring(color.g) .. ", b=" .. tostring(color.b) .. ", a=" .. tostring(color.a))
 
     -- Create button container
     local container = parent:CreateChildWidget("window", id .. "Container", 0, true)
@@ -240,7 +240,7 @@ local function createColorPickButton(id, parent, color, x, y)
     colorPreview:AddAnchor("CENTER", container, 0, 0)
     
     -- Create color background
-     api.Log:Info("BetterBars: createColorPickButton - Attempting to create colorBG for " .. id)
+     -- api.Log:Info("BetterBars: createColorPickButton - Attempting to create colorBG for " .. id)
     local colorBG = nil -- Initialize as nil
     local success, result = pcall(function()
         -- Check color components again just before use
@@ -257,14 +257,14 @@ local function createColorPickButton(id, parent, color, x, y)
     end)
 
     if not success or not colorBG then
-         api.Log:Err("BetterBars: createColorPickButton - FAILED to create colorBG for id: " .. id .. ". Error: " .. tostring(result))
+         -- api.Log:Err("BetterBars: createColorPickButton - FAILED to create colorBG for id: " .. id .. ". Error: " .. tostring(result))
          -- Attempt to create a fallback red background to indicate error visually
          pcall(function()
              colorBG = colorPreview:CreateColorDrawable(1, 0, 0, 1, "background") 
          end)
          if not colorBG then return {} end -- Still failed, return empty
     else
-         api.Log:Info("BetterBars: createColorPickButton - colorBG created successfully for id: " .. id)
+         -- api.Log:Info("BetterBars: createColorPickButton - colorBG created successfully for id: " .. id)
     end
 
     colorBG:AddAnchor("TOPLEFT", colorPreview, 0, 0)
@@ -305,7 +305,7 @@ local function createColorPickButton(id, parent, color, x, y)
         local popupBorder = colorPopup:CreateNinePartDrawable(TEXTURE_PATH.DEFAULT, "overlay")
         popupBorder:SetCoords(949, 199, 8, 8)
         popupBorder:SetInset(3, 3, 3, 3)
-        popupBorder:SetColor(1, 1, 1, 0.5)  -- Bright white border
+        popupBorder:SetColor(1, 1, 1, 0.5)  -- White border
         popupBorder:AddAnchor("TOPLEFT", colorPopup, 0, 0)
         popupBorder:AddAnchor("BOTTOMRIGHT", colorPopup, 0, 0)
         
@@ -619,7 +619,7 @@ local function createColorPickButton(id, parent, color, x, y)
     colorPreview:SetHandler("OnLeave", colorPreview.OnLeave)
     
     -- Add Debug Log End
-     api.Log:Info("BetterBars: createColorPickButton END - id: " .. id)
+     -- api.Log:Info("BetterBars: createColorPickButton END - id: " .. id)
     return { colorBG = colorBG }
 end
 
@@ -696,7 +696,7 @@ local function initializeSettingsPage()
             if controls.ehpColorButton then 
                  controls.ehpColorButton.colorType = "ehp" 
             else
-                 api.Log:Err("BetterBars: Failed to assign colorType, ehpColorButton creation likely failed.")
+                 -- api.Log:Err("BetterBars: Failed to assign colorType, ehpColorButton creation likely failed.")
             end
     
     -- =============================================
