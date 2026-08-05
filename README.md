@@ -6,6 +6,8 @@ texture atlas.
 
 Type `bb` in chat, or open it from the addon list, to configure everything.
 
+![BetterBars settings window](https://github.com/user-attachments/assets/ecb0c7f9-f81d-446c-b86e-183886a588e0)
+
 ## Features
 
 - **Retail-style bars** — the newer client's exact backdrop cell (border,
@@ -30,6 +32,26 @@ Type `bb` in chat, or open it from the addon list, to configure everything.
 - **Quality of life** — labels formatted your way (current / percent / both /
   hidden), housing HP display, bar heights, background opacity, and a Reset
   button with a 5-second are-you-sure arm.
+
+### Colour wheel
+
+Pick any colour by hue and saturation, dial the brightness, type exact RGB,
+or take one of the presets. Everything applies to the live bars instantly.
+
+![Colour wheel picker](https://github.com/user-attachments/assets/b985f02a-7370-459d-b932-d080375b9a46)
+
+### Level font picker
+
+Every font the client ships, each row drawn in the font it offers.
+
+![Level font picker](https://github.com/user-attachments/assets/7eac19e9-554a-4dbe-b97a-cd2f3fd0b754)
+
+### Live preview
+
+The preview carries your colours, bar heights, texture, label format, font
+size and level font — no need to leave the window to see a change.
+
+![Live preview](https://github.com/user-attachments/assets/379c3bcd-471e-4668-b2bf-45c37daf2c20)
 
 ## Install
 
