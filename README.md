@@ -6,6 +6,10 @@ texture atlas.
 
 Type `bb` in chat, or open it from the addon list, to configure everything.
 
+Vanilla frames on top, BetterBars underneath:
+
+![Before and after](https://github.com/user-attachments/assets/4b10ea8f-1490-4dbe-b599-9e7d2b10346d)
+
 ![BetterBars settings window](https://github.com/user-attachments/assets/ecb0c7f9-f81d-446c-b86e-183886a588e0)
 
 ## Features
