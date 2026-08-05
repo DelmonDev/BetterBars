@@ -1,0 +1,8 @@
+# Kept in the repo for editor completion, never shipped: the client provides
+# the real ADDON_API, and a stale stub in the addon folder only confuses.
+api.lua export-ignore
+
+# Development artefacts
+.gitignore export-ignore
+.gitattributes export-ignore
+.backup/ export-ignore

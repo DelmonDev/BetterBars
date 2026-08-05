@@ -2,6 +2,16 @@ local api = require("api")
 local settings = require("BetterBars/settings")
 local default_settings = require("BetterBars/default_settings")
 
+-- Single source of the addon version for the credit label; main.lua's
+-- manifest carries the same literal (kept in sync by hand - requiring this
+-- module at parse time caused the every-login reset bug).
+local ADDON_VERSION = "3.0"
+
+-- Waiting for Aguru to enable castbar in API :)
+-- Hides the Cast bar toggle and its colour control; the feature itself is
+-- parked behind the same flag in main.lua.
+local CAST_BAR_ENABLED = false
+
 -- =============================================
 -- MAIN SETTINGS WINDOW SECTION
 
@@ -24,7 +34,7 @@ local colorValues = {}
 
 local function loadColorValues()
     local s = settings.getColors()
-    for _, key in ipairs({"hp", "mp", "ehp"}) do
+    for _, key in ipairs({"hp", "mp", "ehp", "cast"}) do
         if s[key] then
             colorValues[key] = {
                 r = s[key].r,
@@ -55,7 +65,7 @@ local function saveColorToGame(key)
 end
 
 local function applyAllColors()
-    for _, key in ipairs({"hp", "mp", "ehp"}) do
+    for _, key in ipairs({"hp", "mp", "ehp", "cast"}) do
         applyColorToDrawable(key)
     end
 end
@@ -100,7 +110,7 @@ local function saveSettings()
     end
     
     -- Save each color from the colorValues table (reliable) instead of reading from drawables (unreliable)
-    for _, key in ipairs({"hp", "mp", "ehp"}) do
+    for _, key in ipairs({"hp", "mp", "ehp", "cast"}) do
         local cv = colorValues[key]
         if cv then
             currentSettings.colors[key] = { r = cv.r, g = cv.g, b = cv.b, a = cv.a }
@@ -115,20 +125,30 @@ local function saveSettings()
     hideColorPopup()
 end
 
--- Function to reset settings to defaults
+-- Function to reset settings to defaults. Each stage is pcall'd and any
+-- failure is surfaced: the event emitter behind saveSettings runs listeners
+-- WITHOUT protection (addons.lua EventHandler:emit), so an unprotected error
+-- anywhere down the chain used to kill this handler silently, mid-reset.
 local function resetSettings()
-    colorValues = {
-        hp = { r = default_settings.colors.hp.r, g = default_settings.colors.hp.g, b = default_settings.colors.hp.b, a = default_settings.colors.hp.a },
-        mp = { r = default_settings.colors.mp.r, g = default_settings.colors.mp.g, b = default_settings.colors.mp.b, a = default_settings.colors.mp.a },
-        ehp = { r = default_settings.colors.ehp.r, g = default_settings.colors.ehp.g, b = default_settings.colors.ehp.b, a = default_settings.colors.ehp.a },
-    }
-    applyAllColors()
-    settings.resetToDefaults()
-    if wndUpdateColorCubes then wndUpdateColorCubes() end
-    if wndRefreshDisplayValues then wndRefreshDisplayValues() end
-    
-    -- Hide color popup if it's visible
-    hideColorPopup()
+    local function step(name, fn)
+        local ok, err = pcall(fn)
+        if not ok then
+            api.Log:Err("BetterBars reset - " .. name .. " failed: " .. tostring(err))
+        end
+        return ok
+    end
+    step("colors", function()
+        colorValues = {}
+        for _, key in ipairs({"hp", "mp", "ehp", "cast"}) do
+            local d = default_settings.colors[key]
+            colorValues[key] = { r = d.r, g = d.g, b = d.b, a = d.a }
+        end
+        applyAllColors()
+    end)
+    step("store", function() settings.resetToDefaults() end)
+    step("cubes", function() if wndUpdateColorCubes then wndUpdateColorCubes() end end)
+    step("controls", function() if wndRefreshDisplayValues then wndRefreshDisplayValues() end end)
+    step("popup", hideColorPopup)
 end
 
 -- Function to close settings window
@@ -142,281 +162,34 @@ local function closeSettingsWindow()
     end
 end
 
--- Define color palette with variations
+-- Preset swatches under the wheel: 10 hues in a bright and a deep row. The
+-- wheel + brightness slider cover everything else, so the six-row wall of
+-- near-duplicates is gone.
 local colorPalette = {
-    -- Row 1 (Light colors)
-    { r = 255, g = 204, b = 204, a = 1 }, -- Light pink
-    { r = 255, g = 229, b = 204, a = 1 }, -- Light peach
-    { r = 255, g = 255, b = 204, a = 1 }, -- Light yellow
-    { r = 229, g = 255, b = 204, a = 1 }, -- Light lime
-    { r = 204, g = 255, b = 204, a = 1 }, -- Light green
-    { r = 204, g = 255, b = 229, a = 1 }, -- Light mint
-    { r = 204, g = 255, b = 255, a = 1 }, -- Light cyan
-    { r = 204, g = 229, b = 255, a = 1 }, -- Light sky
-    { r = 204, g = 204, b = 255, a = 1 }, -- Light blue
-    { r = 229, g = 204, b = 255, a = 1 }, -- Light purple
-
-    -- Row 2 (Medium-light colors)
-    { r = 255, g = 153, b = 153, a = 1 }, -- Medium-light red
-    { r = 255, g = 204, b = 153, a = 1 }, -- Medium-light orange
-    { r = 255, g = 255, b = 153, a = 1 }, -- Medium-light yellow
-    { r = 204, g = 255, b = 153, a = 1 }, -- Medium-light lime
-    { r = 153, g = 255, b = 153, a = 1 }, -- Medium-light green
-    { r = 153, g = 255, b = 204, a = 1 }, -- Medium-light mint
-    { r = 153, g = 255, b = 255, a = 1 }, -- Medium-light cyan
-    { r = 153, g = 204, b = 255, a = 1 }, -- Medium-light sky
-    { r = 153, g = 153, b = 255, a = 1 }, -- Medium-light blue
-    { r = 204, g = 153, b = 255, a = 1 }, -- Medium-light purple
-
-    -- Row 3 (Medium colors)
-    { r = 255, g = 102, b = 102, a = 1 }, -- Medium red
-    { r = 255, g = 178, b = 102, a = 1 }, -- Medium orange
-    { r = 255, g = 255, b = 102, a = 1 }, -- Medium yellow
-    { r = 178, g = 255, b = 102, a = 1 }, -- Medium lime
-    { r = 102, g = 255, b = 102, a = 1 }, -- Medium green
-    { r = 102, g = 255, b = 178, a = 1 }, -- Medium mint
-    { r = 102, g = 255, b = 255, a = 1 }, -- Medium cyan
-    { r = 102, g = 178, b = 255, a = 1 }, -- Medium sky
-    { r = 102, g = 102, b = 255, a = 1 }, -- Medium blue
-    { r = 178, g = 102, b = 255, a = 1 }, -- Medium purple
-
-    -- Row 4 (Medium-dark colors)
-    { r = 255, g = 51, b = 51, a = 1 },   -- Medium-dark red
-    { r = 255, g = 153, b = 51, a = 1 },  -- Medium-dark orange
-    { r = 255, g = 255, b = 51, a = 1 },  -- Medium-dark yellow
-    { r = 153, g = 255, b = 51, a = 1 },  -- Medium-dark lime
-    { r = 51, g = 255, b = 51, a = 1 },   -- Medium-dark green
-    { r = 51, g = 255, b = 153, a = 1 },  -- Medium-dark mint
-    { r = 51, g = 255, b = 255, a = 1 },  -- Medium-dark cyan
-    { r = 51, g = 153, b = 255, a = 1 },  -- Medium-dark sky
-    { r = 51, g = 51, b = 255, a = 1 },   -- Medium-dark blue
-    { r = 153, g = 51, b = 255, a = 1 },  -- Medium-dark purple
-
-    -- Row 5 (Dark colors)
-    { r = 204, g = 0, b = 0, a = 1 },     -- Dark red
-    { r = 204, g = 102, b = 0, a = 1 },   -- Dark orange
-    { r = 204, g = 204, b = 0, a = 1 },   -- Dark yellow
-    { r = 102, g = 204, b = 0, a = 1 },   -- Dark lime
-    { r = 0, g = 204, b = 0, a = 1 },     -- Dark green
-    { r = 0, g = 204, b = 102, a = 1 },   -- Dark mint
-    { r = 0, g = 204, b = 204, a = 1 },   -- Dark cyan
-    { r = 0, g = 102, b = 204, a = 1 },   -- Dark sky
-    { r = 0, g = 0, b = 204, a = 1 },     -- Dark blue
-    { r = 102, g = 0, b = 204, a = 1 },   -- Dark purple
-
-    -- Row 6 (Darker colors)
-    { r = 153, g = 0, b = 0, a = 1 },     -- Darker red
-    { r = 153, g = 76, b = 0, a = 1 },    -- Darker orange
-    { r = 153, g = 153, b = 0, a = 1 },   -- Darker yellow
-    { r = 76, g = 153, b = 0, a = 1 },    -- Darker lime
-    { r = 0, g = 153, b = 0, a = 1 },     -- Darker green
-    { r = 0, g = 153, b = 76, a = 1 },    -- Darker mint
-    { r = 0, g = 153, b = 153, a = 1 },   -- Darker cyan
-    { r = 0, g = 76, b = 153, a = 1 },    -- Darker sky
-    { r = 0, g = 0, b = 153, a = 1 },     -- Darker blue
-    { r = 76, g = 0, b = 153, a = 1 }     -- Darker purple
+    -- Row 1 (bright)
+    { r = 255, g = 80,  b = 80,  a = 1 },
+    { r = 255, g = 150, b = 60,  a = 1 },
+    { r = 255, g = 220, b = 70,  a = 1 },
+    { r = 150, g = 220, b = 60,  a = 1 },
+    { r = 127, g = 189, b = 28,  a = 1 },   -- default HP green
+    { r = 70,  g = 210, b = 180, a = 1 },
+    { r = 50,  g = 150, b = 255, a = 1 },   -- default MP blue
+    { r = 90,  g = 120, b = 255, a = 1 },
+    { r = 170, g = 100, b = 255, a = 1 },
+    { r = 240, g = 100, b = 200, a = 1 },
+    -- Row 2 (deep)
+    { r = 199, g = 80,  b = 57,  a = 1 },   -- default enemy red
+    { r = 190, g = 100, b = 30,  a = 1 },
+    { r = 200, g = 160, b = 30,  a = 1 },
+    { r = 100, g = 160, b = 30,  a = 1 },
+    { r = 40,  g = 150, b = 40,  a = 1 },
+    { r = 30,  g = 150, b = 130, a = 1 },
+    { r = 40,  g = 130, b = 200, a = 1 },
+    { r = 50,  g = 70,  b = 190, a = 1 },
+    { r = 120, g = 60,  b = 190, a = 1 },
+    { r = 180, g = 60,  b = 140, a = 1 },
 }
 
--- =============================================
--- CACHED COLOR POPUP — built once, reused
--- =============================================
-local popupRGBInputs = {}
-local popupCustomPicker = nil
-
-local function buildColorPopup()
-    if colorPopup then return end
-    
-    colorPopup = api.Interface:CreateWidget("window", "BetterBarsColorPopup")
-    colorPopup:SetExtent(350, 350)
-    
-    -- Black background
-    local popupBG = colorPopup:CreateColorDrawable(0, 0, 0, 1, "background")
-    popupBG:AddAnchor("TOPLEFT", colorPopup, 0, 0)
-    popupBG:AddAnchor("BOTTOMRIGHT", colorPopup, 0, 0)
-    
-    -- White border
-    local popupBorder = colorPopup:CreateNinePartDrawable(TEXTURE_PATH.DEFAULT, "overlay")
-    popupBorder:SetCoords(949, 199, 8, 8)
-    popupBorder:SetInset(3, 3, 3, 3)
-    popupBorder:SetColor(1, 1, 1, 0.5)
-    popupBorder:AddAnchor("TOPLEFT", colorPopup, 0, 0)
-    popupBorder:AddAnchor("BOTTOMRIGHT", colorPopup, 0, 0)
-    
-    -- Title
-    local popupTitle = colorPopup:CreateChildWidget("label", "popupTitle", 0, true)
-    popupTitle:SetText("Select a Color")
-    popupTitle:AddAnchor("TOP", colorPopup, 0, 30)
-    popupTitle.style:SetFontSize(FONT_SIZE.MIDDLE)
-    popupTitle.style:SetAlign(ALIGN.CENTER)
-    popupTitle.style:SetColor(1, 1, 1, 1)
-    
-    -- Preset color grid
-    local colorGrid = colorPopup:CreateChildWidget("window", "colorGrid", 0, true)
-    colorGrid:SetExtent(280, 210)
-    colorGrid:AddAnchor("TOP", popupTitle, "BOTTOM", 0, 40)
-    
-    local squareSize = 24
-    local spacing = 2
-    local squaresPerRow = 10
-    
-    for i, colorData in ipairs(colorPalette) do
-        local row = math.floor((i-1) / squaresPerRow)
-        local col = (i-1) % squaresPerRow
-        
-        local square = colorGrid:CreateChildWidget("window", "square" .. i, 0, true)
-        square:SetExtent(squareSize, squareSize)
-        square:AddAnchor("TOPLEFT", colorGrid, col * (squareSize + spacing) + 10, row * (squareSize + spacing) + 10)
-        
-        local squareBG = square:CreateColorDrawable(
-            colorData.r/255, colorData.g/255, colorData.b/255, colorData.a, "background"
-        )
-        squareBG:AddAnchor("TOPLEFT", square, 0, 0)
-        squareBG:AddAnchor("BOTTOMRIGHT", square, 0, 0)
-        
-        local squareBorder = square:CreateNinePartDrawable(TEXTURE_PATH.DEFAULT, "overlay")
-        squareBorder:SetCoords(949, 199, 8, 8)
-        squareBorder:SetInset(2, 2, 2, 2)
-        squareBorder:SetColor(1, 1, 1, 0.1)
-        squareBorder:AddAnchor("TOPLEFT", square, 0, 0)
-        squareBorder:AddAnchor("BOTTOMRIGHT", square, 0, 0)
-        
-        square:SetHandler("OnClick", function()
-            local key = colorPopupTarget
-            if not key then return end
-            colorValues[key] = { r = colorData.r, g = colorData.g, b = colorData.b, a = colorData.a }
-            if wndColorCubes and wndColorCubes[key] and wndColorCubes[key]._fill then
-                wndColorCubes[key]._fill:SetColor(colorData.r/255, colorData.g/255, colorData.b/255, colorData.a)
-            end
-            saveColorToGame(key)
-            hideColorPopup()
-        end)
-        
-        square:SetHandler("OnEnter", function()
-            squareBorder:SetColor(0, 0, 0, 0.8)
-        end)
-        square:SetHandler("OnLeave", function()
-            squareBorder:SetColor(1, 1, 1, 0.3)
-        end)
-    end
-    
-    -- Custom Color button
-    local customButton = colorPopup:CreateChildWidget("button", "customButton", 0, true)
-    customButton:SetText("Custom Color")
-    customButton:SetExtent(140, 30)
-    customButton:AddAnchor("BOTTOM", colorPopup, 0, -62)
-    ApplyButtonSkin(customButton, BUTTON_BASIC.DEFAULT)
-    
-    -- Custom color picker container
-    popupCustomPicker = colorPopup:CreateChildWidget("window", "customColorPicker", 0, true)
-    popupCustomPicker:SetExtent(260, 210)
-    popupCustomPicker:RemoveAllAnchors()
-    popupCustomPicker:AddAnchor("TOPLEFT", colorGrid, "TOPRIGHT", 39, -70)
-    popupCustomPicker:Show(false)
-    
-    local customBG = popupCustomPicker:CreateColorDrawable(0, 0, 0, 1, "background")
-    customBG:AddAnchor("TOPLEFT", popupCustomPicker, 0, 0)
-    customBG:AddAnchor("BOTTOMRIGHT", popupCustomPicker, 0, 0)
-    local customBorder = popupCustomPicker:CreateNinePartDrawable(TEXTURE_PATH.DEFAULT, "overlay")
-    customBorder:SetCoords(949, 199, 8, 8)
-    customBorder:SetInset(3, 3, 3, 3)
-    customBorder:SetColor(1, 1, 1, 0.5)
-    customBorder:AddAnchor("TOPLEFT", popupCustomPicker, 0, 0)
-    customBorder:AddAnchor("BOTTOMRIGHT", popupCustomPicker, 0, 0)
-    
-    -- Custom RGB title
-    local customTitle = popupCustomPicker:CreateChildWidget("label", "customTitle", 0, true)
-    customTitle:SetText("Custom RGB Values")
-    customTitle:SetExtent(180, 35)
-    customTitle:AddAnchor("TOP", popupCustomPicker, 0, 0)
-    customTitle.style:SetFontSize(FONT_SIZE.MIDDLE)
-    customTitle.style:SetAlign(ALIGN.CENTER)
-    customTitle.style:SetColor(0.9, 0.9, 0.9, 1)
-    
-    -- RGB inputs
-    local function createColorInput(label, parent, yOffset, defaultValue, textColor)
-        local container = parent:CreateChildWidget("window", label .. "Container", 0, true)
-        container:SetExtent(200, 30)
-        container:AddAnchor("TOP", parent, 0, yOffset)
-        local rowBG = container:CreateColorDrawable(0.15, 0.15, 0.15, 0.5, "background")
-        rowBG:AddAnchor("TOPLEFT", container, 5, 0)
-        rowBG:AddAnchor("BOTTOMRIGHT", container, -5, 0)
-        local labelWidget = container:CreateChildWidget("label", label .. "Label", 0, true)
-        labelWidget:SetText(label .. ":")
-        labelWidget:SetExtent(30, 20)
-        labelWidget:AddAnchor("LEFT", container, 20, 0)
-        labelWidget.style:SetFontSize(FONT_SIZE.MIDDLE)
-        labelWidget.style:SetColor(unpack(textColor))
-        local inputBG = container:CreateColorDrawable(0.1, 0.1, 0.1, 0.8, "background")
-        inputBG:SetExtent(60, 22)
-        inputBG:AddAnchor("LEFT", labelWidget, "RIGHT", 15, 0)
-        local input = W_CTRL.CreateEdit(label .. "Input", container)
-        input:SetExtent(50, 20)
-        input:AddAnchor("CENTER", inputBG, 0, 0)
-        input:SetText(tostring(defaultValue))
-        input:SetMaxTextLength(3)
-        input.style:SetAlign(ALIGN.CENTER)
-        function input:OnTextChanged()
-            local text = self:GetText()
-            local number = tonumber(text) or 0
-            if number > 255 then number = 255 end
-            if number < 0 then number = 0 end
-            self:SetText(tostring(number))
-        end
-        input:SetHandler("OnTextChanged", input.OnTextChanged)
-        return input
-    end
-    
-    popupRGBInputs.red = createColorInput("R", popupCustomPicker, 40, 0, {1, 0.4, 0.4, 1})
-    popupRGBInputs.green = createColorInput("G", popupCustomPicker, 80, 0, {0.4, 1, 0.4, 1})
-    popupRGBInputs.blue = createColorInput("B", popupCustomPicker, 120, 0, {0.4, 0.4, 1, 1})
-    
-    -- Apply custom color
-    local applyButton = popupCustomPicker:CreateChildWidget("button", "applyButton", 0, true)
-    applyButton:SetText("Apply")
-    applyButton:SetExtent(100, 30)
-    applyButton:AddAnchor("TOP", popupRGBInputs.blue, "BOTTOM", 0, 25)
-    ApplyButtonSkin(applyButton, BUTTON_BASIC.DEFAULT)
-    applyButton:SetHandler("OnClick", function()
-        local key = colorPopupTarget
-        if not key then return end
-        local r = tonumber(popupRGBInputs.red:GetText()) or 0
-        local g = tonumber(popupRGBInputs.green:GetText()) or 0
-        local b = tonumber(popupRGBInputs.blue:GetText()) or 0
-        colorValues[key] = { r = r, g = g, b = b, a = 1 }
-        if wndColorCubes and wndColorCubes[key] and wndColorCubes[key]._fill then
-            wndColorCubes[key]._fill:SetColor(r/255, g/255, b/255, 1)
-        end
-        saveColorToGame(key)
-        hideColorPopup()
-    end)
-    
-    -- Toggle custom color picker
-    customButton:SetHandler("OnClick", function()
-        popupCustomPicker:Show(not popupCustomPicker:IsVisible())
-        if popupCustomPicker:IsVisible() then
-            local key = colorPopupTarget
-            local cv = colorValues[key]
-            if cv then
-                popupRGBInputs.red:SetText(tostring(cv.r))
-                popupRGBInputs.green:SetText(tostring(cv.g))
-                popupRGBInputs.blue:SetText(tostring(cv.b))
-            end
-        end
-    end)
-    
-    -- Close button
-    local closeButton = colorPopup:CreateChildWidget("button", "closeButton", 0, true)
-    closeButton:SetText("Close")
-    closeButton:SetExtent(100, 30)
-    closeButton:AddAnchor("BOTTOM", colorPopup, 0, -10)
-    ApplyButtonSkin(closeButton, BUTTON_BASIC.DEFAULT)
-    closeButton:SetHandler("OnClick", hideColorPopup)
-    
-    -- Make draggable
-    colorPopup:SetHandler("OnDragStart", colorPopup.StartMoving)
-    colorPopup:SetHandler("OnDragStop", colorPopup.StopMovingOrSizing)
-    colorPopup:Show(false)
-end
 
 -- =============================================
 -- HELPERS — local UI widget factories
@@ -512,6 +285,7 @@ function U.ChildFlatButton(parent, id, text, x, y, w, h, tone, onClick, align)
     function button:SetCleanText(value) self.cleanLabel:SetText(value or "") end
     function button:SetTone(value) self.cleanFill:SetColor(value[1], value[2], value[3], value[4]) end
     if onClick then button:SetHandler("OnClick", onClick) end
+    pcall(function() button:RegisterForClicks("LeftButton") end)
     button:Show(true)
     return button
 end
@@ -582,70 +356,686 @@ C = {
     panel   = {0.045, 0.045, 0.052, 0.84},
 }
 
-local btnRefs = {}  -- references to toggle buttons for refresh
-
-local function setToggle(btn, state, text)
-    U.SetToggle(btn, state, text)
+-- =============================================
+-- HSV <-> RGB (color wheel math)
+-- =============================================
+local function hsvToRgb(h, s, v) -- h 0..360, s/v 0..1 -> r,g,b 0..255
+    local c = v * s
+    local hp = (h % 360) / 60
+    local x = c * (1 - math.abs(hp % 2 - 1))
+    local r, g, b = 0, 0, 0
+    if hp < 1 then r, g, b = c, x, 0
+    elseif hp < 2 then r, g, b = x, c, 0
+    elseif hp < 3 then r, g, b = 0, c, x
+    elseif hp < 4 then r, g, b = 0, x, c
+    elseif hp < 5 then r, g, b = x, 0, c
+    else r, g, b = c, 0, x end
+    local m = v - c
+    return math.floor((r + m) * 255 + 0.5),
+           math.floor((g + m) * 255 + 0.5),
+           math.floor((b + m) * 255 + 0.5)
 end
 
-local function refreshAllToggleButtons()
+local function rgbToHsv(r, g, b) -- 0..255 -> h 0..360, s 0..1, v 0..1
+    r, g, b = r / 255, g / 255, b / 255
+    local maxc = math.max(r, g, b)
+    local minc = math.min(r, g, b)
+    local d = maxc - minc
+    local h = 0
+    if d > 0 then
+        if maxc == r then h = ((g - b) / d) % 6
+        elseif maxc == g then h = (b - r) / d + 2
+        else h = (r - g) / d + 4 end
+        h = h * 60
+    end
+    local s = maxc == 0 and 0 or d / maxc
+    return h, s, maxc
+end
+
+-- =============================================
+-- TTP-style flat slider and check factories
+-- =============================================
+-- Shared row layout, sized to fit both the 408-wide section panels and the
+-- 360-wide color popup: label 14..94, "-" 98, track 120..270, "+" 274,
+-- value label 296..346.
+local SLIDER_TRACK_W, SLIDER_TRACK_H = 150, 16
+
+function U.SliderRow(panel, id, labelText, y, minV, maxV, value, onChanged, displayFn)
+    displayFn = displayFn or tostring
+    local cur = math.max(minV, math.min(maxV, value))
+    U.ChildLabel(panel, id .. "_lbl", labelText, 14, y + 2, 82, 16, 13, C.gold, ALIGN.LEFT)
+    local valLbl = U.ChildLabel(panel, id .. "_val", displayFn(cur), 296, y + 2, 50, 16, 13, C.white, ALIGN.CENTER)
+
+    local track = panel:CreateChildWidget("button", id .. "_track", 0, true)
+    track:SetExtent(SLIDER_TRACK_W, SLIDER_TRACK_H)
+    track:AddAnchor("TOPLEFT", panel, 120, y)
+    track:SetText("")
+    local trackBorder = track:CreateColorDrawable(0, 0, 0, 0.92, "background")
+    trackBorder:AddAnchor("TOPLEFT", track, 0, 0)
+    trackBorder:AddAnchor("BOTTOMRIGHT", track, 0, 0)
+    local trackBg = track:CreateColorDrawable(0.10, 0.10, 0.12, 0.95, "background")
+    trackBg:AddAnchor("TOPLEFT", track, 1, 1)
+    trackBg:AddAnchor("BOTTOMRIGHT", track, -1, -1)
+    local fill = track:CreateColorDrawable(0, 0.55, 0.55, 0.9, "background")
+    fill:AddAnchor("TOPLEFT", track, 1, 1)
+
+    local function refreshFill()
+        local frac = (cur - minV) / (maxV - minV)
+        local w = math.floor(frac * (SLIDER_TRACK_W - 2) + 0.5)
+        if w < 1 then
+            fill:SetVisible(false)
+        else
+            fill:SetVisible(true)
+            fill:SetExtent(w, SLIDER_TRACK_H - 2)
+        end
+    end
+    refreshFill()
+
+    local function apply(nv, silent)
+        if nv < minV then nv = minV end
+        if nv > maxV then nv = maxV end
+        if nv == cur then return end
+        cur = nv
+        valLbl:SetText(displayFn(cur))
+        refreshFill()
+        if not silent then onChanged(cur) end
+    end
+
+    track:SetHandler("OnWheelUp", function() apply(cur + 1) end)
+    track:SetHandler("OnWheelDown", function() apply(cur - 1) end)
+    U.ChildFlatButton(panel, id .. "_dec", "-", 98, y, 18, SLIDER_TRACK_H, C.button,
+        function() apply(cur - 1) end, ALIGN.CENTER)
+    U.ChildFlatButton(panel, id .. "_inc", "+", 274, y, 18, SLIDER_TRACK_H, C.button,
+        function() apply(cur + 1) end, ALIGN.CENTER)
+
+    return {
+        SetValue = function(v) apply(v, true) end,
+        GetValue = function() return cur end,
+    }
+end
+
+-- Flat check: gold label left, 14px box right whose fill carries the state
+-- (cyan = on). Same control TTP uses, so the two addons read as one family.
+function U.FlatCheck(panel, id, labelText, x, y, w, isOn, onToggle)
+    local btn = panel:CreateChildWidget("button", id, 0, true)
+    btn:SetExtent(w, 20)
+    btn:AddAnchor("TOPLEFT", panel, x, y)
+    btn:SetText("")
+    local border = btn:CreateColorDrawable(0, 0, 0, 0.92, "overlay")
+    border:SetExtent(14, 14)
+    border:AddAnchor("RIGHT", btn, 0, 0)
+    local fill = btn:CreateColorDrawable(0.14, 0.14, 0.16, 1, "overlay")
+    fill:SetExtent(12, 12)
+    fill:AddAnchor("RIGHT", btn, -1, 0)
+    local lbl = U.ChildLabel(btn, id .. "_lbl", labelText, 0, 2, w - 22, 16, 13, C.gold, ALIGN.LEFT)
+    lbl:Clickable(false)
+    local function refresh()
+        if isOn() then
+            fill:SetColor(C.accent[1], C.accent[2], C.accent[3], 1)
+        else
+            fill:SetColor(0.14, 0.14, 0.16, 1)
+        end
+    end
+    btn:SetHandler("OnClick", function() onToggle(); refresh() end)
+    refresh()
+    return { btn = btn, Refresh = refresh }
+end
+
+-- =============================================
+-- LIVE PREVIEW BARS (built inside the COLORS panel)
+-- =============================================
+local BB_TEX_DIR = "../Addon/BetterBars/textures/"
+local previewRefs = nil
+
+-- Mock values the preview renders with
+local PREVIEW_HP, PREVIEW_HP_PCT = 14580, 70
+local PREVIEW_MP, PREVIEW_MP_PCT = 9999, 70
+
+local function buildPreviewBar(panel, idSuffix, x, y, w, h, texName, texW, texH)
+    local bar = panel:CreateChildWidget("emptywidget", "bbPrev" .. idSuffix, 0, true)
+    bar:SetExtent(w, h)
+    bar:AddAnchor("TOPLEFT", panel, x, y)
+
+    -- Backdrop: the extracted ninepart cell, flat fallback (same pair of
+    -- paths ApplyBarBackdrop takes in main.lua). Kept on the returned refs so
+    -- updatePreview can apply the Background opacity setting to it.
+    local nineD, flatD
+    local okNine = pcall(function()
+        local d = bar:CreateNinePartDrawable(TEXTURE_PATH.HUD, "background")
+        pcall(function() d:SetSRGB(false) end)
+        local loaded = d:SetTgaTexture(BB_TEX_DIR .. "bar_frame.png")
+        if loaded == false then error("png did not load") end
+        d:SetCoords(0, 0, 17, 17)
+        d:SetInset(8, 8, 8, 8)
+        d:AddAnchor("TOPLEFT", bar, 0, 0)
+        d:AddAnchor("BOTTOMRIGHT", bar, 0, 0)
+        nineD = d
+    end)
+    if not okNine then
+        flatD = bar:CreateColorDrawable(0, 0, 0, 0.55, "background")
+        flatD:AddAnchor("TOPLEFT", bar, 0, 0)
+        flatD:AddAnchor("BOTTOMRIGHT", bar, 0, 0)
+    end
+
+    -- Trail behind, fill on top (later-created drawables render above)
+    local trail = bar:CreateColorDrawable(0.1, 0.1, 0.1, 1, "background")
+    trail:AddAnchor("TOPLEFT", bar, 2, 2)
+    local fillFlat = bar:CreateColorDrawable(0.5, 0.5, 0.5, 1, "background")
+    fillFlat:AddAnchor("TOPLEFT", bar, 2, 2)
+    local fillTex
+    pcall(function()
+        fillTex = bar:CreateImageDrawable("Textures/Defaults/White.dds", "background")
+        pcall(function() fillTex:SetSRGB(false) end)
+        local loaded = fillTex:SetTgaTexture(BB_TEX_DIR .. texName .. ".png")
+        if loaded == false then error("png did not load") end
+        fillTex:SetCoords(0, 0, texW, texH)
+        fillTex:AddAnchor("TOPLEFT", bar, 2, 2)
+    end)
+    local lbl = U.ChildLabel(bar, "bbPrev" .. idSuffix .. "_lbl", "", 0, 0, w, 14, 11, C.white, ALIGN.CENTER)
+    lbl:RemoveAllAnchors()
+    lbl:AddAnchor("CENTER", bar, 0, 0)
+    return { bar = bar, trail = trail, fillFlat = fillFlat, fillTex = fillTex,
+             nine = nineD, flatBg = flatD, lbl = lbl, w = w, h = h }
+end
+
+local function previewLabelText(fmt, cur, pct)
+    if fmt == "hide" then return "" end
+    if fmt == "current" then return tostring(cur) end
+    if fmt == "percent" then return pct .. "%" end
+    return string.format("%d (%d%%)", cur, pct)
+end
+
+local function updatePreview()
+    if not previewRefs then return end
+    local ok, err = pcall(function()
+        local s2 = settings.getSettings()
+        local useTex = (s2.barTexture or "none") ~= "none"
+        local fmt = s2.labelFormat or "both"
+        local fontSize = s2.labelFontSize or 11
+        local hpH = (s2.barHeight and s2.barHeight.hp) or 17
+        local mpH = (s2.barHeight and s2.barHeight.mp) or 13
+        -- Exactly ApplyCommonStyle's barDy: -1 leaves one clear row between
+        -- the two bar borders, -2 sits them directly against each other
+        -- (the border ring lives 1px inside each box).
+        local gap = (s2.showBarSeparation == true) and -1 or -2
+        -- While the popup edits the enemy colour, the HP preview wears it so
+        -- the change is visible live.
+        local hpKey = (colorPopup and colorPopup:IsVisible() and colorPopupTarget == "ehp")
+            and "ehp" or "hp"
+
+        -- Re-apply geometry. The height setting is the FILL height, exactly
+        -- as ApplyBarBox treats it: the bar box adds the 2px inset on each
+        -- side. Treating it as the box height rendered the preview 4px thin.
+        local hpBox = hpH + 4
+        local mpBox = mpH + 4
+        previewRefs.hp.h = hpBox
+        previewRefs.mp.h = mpBox
+        previewRefs.hp.bar:SetExtent(previewRefs.hp.w, hpBox)
+        previewRefs.mp.bar:SetExtent(previewRefs.mp.w, mpBox)
+        previewRefs.mp.bar:RemoveAllAnchors()
+        previewRefs.mp.bar:AddAnchor("TOPLEFT", previewRefs.panel,
+            previewRefs.x, previewRefs.y + hpBox + gap)
+
+        -- Mock level digit: current font pick, centered on the bar stack
+        if previewRefs.levelLbl then
+            local lbl = previewRefs.levelLbl
+            pcall(function()
+                lbl.style:SetFont(s2.levelFont or "ui/font/yd_ygo540.ttf", 22)
+            end)
+            pcall(function()
+                lbl:RemoveAllAnchors()
+                lbl:AddAnchor("TOPLEFT", previewRefs.panel, 4,
+                    previewRefs.y + math.floor((hpBox + gap + mpBox) / 2) - 13)
+            end)
+        end
+
+        -- Background slider: same application as ApplyBarBackdrop - 1.0 is
+        -- the reference cell at its own alphas, the setting scales from there.
+        local bgK = s2.backgroundOpacity or 1
+
+        local function paint(refs, cv, pctFill, labelText)
+            if not refs or not cv then return end
+            local r, g, b = cv.r / 255, cv.g / 255, cv.b / 255
+            if refs.nine then
+                refs.nine:SetColor(1, 1, 1, math.min(1, bgK))
+            elseif refs.flatBg then
+                refs.flatBg:SetColor(0, 0, 0, 0.55 * bgK)
+            end
+            local fh = refs.h - 4
+            local innerW = refs.w - 4
+            local fw = math.floor(innerW * pctFill / 100 + 0.5)
+            -- damage trail: 15% of the bar behind the fill edge, at the same
+            -- 0.43 luminance main.lua paints real trails with
+            local tw = math.floor(innerW * 0.15 + 0.5)
+            if fw + tw > innerW then tw = innerW - fw end
+            refs.trail:RemoveAllAnchors()
+            refs.trail:AddAnchor("TOPLEFT", refs.bar, 2 + fw, 2)
+            refs.trail:SetExtent(tw, fh)
+            refs.trail:SetColor(r * 0.43, g * 0.43, b * 0.43, 1)
+            refs.trail:SetVisible(tw > 0)
+            if useTex and refs.fillTex then
+                refs.fillTex:SetExtent(fw, fh)
+                refs.fillTex:SetColor(r, g, b, 1)
+                refs.fillTex:SetVisible(true)
+                refs.fillFlat:SetVisible(false)
+            else
+                refs.fillFlat:SetExtent(fw, fh)
+                refs.fillFlat:SetColor(r, g, b, 1)
+                refs.fillFlat:SetVisible(true)
+                if refs.fillTex then refs.fillTex:SetVisible(false) end
+            end
+            refs.lbl.style:SetFontSize(fontSize)
+            refs.lbl:SetText(labelText)
+        end
+
+        paint(previewRefs.hp, colorValues[hpKey], PREVIEW_HP_PCT,
+            previewLabelText(fmt, PREVIEW_HP, PREVIEW_HP_PCT))
+        paint(previewRefs.mp, colorValues.mp, PREVIEW_MP_PCT,
+            previewLabelText(fmt, PREVIEW_MP, PREVIEW_MP_PCT))
+    end)
+    if not ok then api.Log:Err("BetterBars preview: " .. tostring(err)) end
+end
+
+-- Push a colour change everywhere at once: saved settings + live bars (via
+-- BETTERBARS_SETTINGS_UPDATED), the section's colour cube, and the preview.
+local function applyLiveColor(key)
+    saveColorToGame(key)
+    local cv = colorValues[key]
+    if cv and wndColorCubes and wndColorCubes[key] and wndColorCubes[key]._fill then
+        wndColorCubes[key]._fill:SetColor(cv.r / 255, cv.g / 255, cv.b / 255, cv.a or 1)
+    end
+    updatePreview()
+end
+
+-- =============================================
+-- COLOR POPUP — wheel + brightness + RGB + presets
+-- =============================================
+local popupRGBInputs = {}
+local WHEEL_SIZE = 200
+local popupState = { h = 0, s = 0, v = 1 }
+local popupSwatch = nil
+local popupValSlider = nil
+local popupTitleLbl = nil
+
+local function popupSyncInputs()
+    local key = colorPopupTarget
+    local cv = key and colorValues[key]
+    if not cv then return end
+    if popupSwatch then popupSwatch:SetColor(cv.r / 255, cv.g / 255, cv.b / 255, 1) end
+    if popupRGBInputs.r then
+        popupRGBInputs.r:SetText(tostring(cv.r))
+        popupRGBInputs.g:SetText(tostring(cv.g))
+        popupRGBInputs.b:SetText(tostring(cv.b))
+    end
+end
+
+local function popupApplyHSV()
+    local key = colorPopupTarget
+    if not key then return end
+    local r, g, b = hsvToRgb(popupState.h, popupState.s, popupState.v)
+    local a = colorValues[key] and colorValues[key].a or 1
+    colorValues[key] = { r = r, g = g, b = b, a = a }
+    popupSyncInputs()
+    applyLiveColor(key)
+end
+
+local function popupSetRGB(r, g, b)
+    local key = colorPopupTarget
+    if not key then return end
+    local a = colorValues[key] and colorValues[key].a or 1
+    colorValues[key] = { r = r, g = g, b = b, a = a }
+    popupState.h, popupState.s, popupState.v = rgbToHsv(r, g, b)
+    if popupValSlider then popupValSlider.SetValue(math.floor(popupState.v * 100 + 0.5)) end
+    popupSyncInputs()
+    applyLiveColor(key)
+end
+
+local function buildColorPopup()
+    if colorPopup then return end
+
+    local W, H = 360, 442
+    colorPopup = api.Interface:CreateEmptyWindow("BetterBarsColorPopup", "UIParent")
+    colorPopup:SetExtent(W, H)
+    U.AddBg(colorPopup, 0, 0, 0, 0.96)
+
+    local body = colorPopup:CreateColorDrawable(C.dark[1], C.dark[2], C.dark[3], C.dark[4], "background")
+    body:AddAnchor("TOPLEFT", colorPopup, 1, 1)
+    body:AddAnchor("BOTTOMRIGHT", colorPopup, -1, -1)
+    local header = colorPopup:CreateColorDrawable(C.header[1], C.header[2], C.header[3], C.header[4], "background")
+    header:SetExtent(W - 2, 30)
+    header:AddAnchor("TOPLEFT", colorPopup, 1, 1)
+    local accent = colorPopup:CreateColorDrawable(C.accent[1], C.accent[2], C.accent[3], 0.85, "background")
+    accent:SetExtent(4, 30)
+    accent:AddAnchor("TOPLEFT", colorPopup, 1, 1)
+    popupTitleLbl = U.Label(colorPopup, "bbPopupTitle", "COLOR", 16, 7, 200, 16, 13, C.gold, ALIGN.LEFT)
+
+    U.FlatButton(colorPopup, "bbPopupClose", "X", W - 32, 5, 22, 22, C.button, function()
+        hideColorPopup()
+        updatePreview()
+    end)
+
+    -- The wheel: one image drawable on a button; clicks map back to hue and
+    -- saturation through the mouse position. GetEffectiveOffset gives the
+    -- widget's absolute origin in UI units; GetMousePos is raw pixels, so it
+    -- is divided by the UI scale first.
+    local wheelBtn = colorPopup:CreateChildWidget("button", "bbWheel", 0, true)
+    wheelBtn:SetExtent(WHEEL_SIZE, WHEEL_SIZE)
+    wheelBtn:AddAnchor("TOPLEFT", colorPopup, 80, 44)
+    wheelBtn:SetText("")
+    local wheelOk = pcall(function()
+        local d = wheelBtn:CreateImageDrawable("Textures/Defaults/White.dds", "background")
+        pcall(function() d:SetSRGB(false) end)
+        local loaded = d:SetTgaTexture(BB_TEX_DIR .. "colorwheel.png")
+        if loaded == false then error("wheel png did not load") end
+        d:SetCoords(0, 0, WHEEL_SIZE, WHEEL_SIZE)
+        d:AddAnchor("TOPLEFT", wheelBtn, 0, 0)
+        d:AddAnchor("BOTTOMRIGHT", wheelBtn, 0, 0)
+    end)
+    if not wheelOk then
+        api.Log:Err("BetterBars: colorwheel.png missing - wheel disabled, presets still work")
+    end
+    wheelBtn:SetHandler("OnClick", function(self)
+        local ok = pcall(function()
+            local mx, my = api.Input:GetMousePos()
+            local scale = api.Interface:GetUIScale()
+            if scale and scale > 0 then mx, my = mx / scale, my / scale end
+            local wx, wy = self:GetEffectiveOffset()
+            local R = WHEEL_SIZE / 2
+            local dx = (mx - wx) - R
+            local dy = (my - wy) - R
+            local dist = math.sqrt(dx * dx + dy * dy)
+            if dist > R then return end
+            popupState.h = math.deg(math.atan2(dy, dx)) % 360
+            popupState.s = math.min(1, dist / (R - 2))
+            popupApplyHSV()
+        end)
+        if not ok then
+            api.Log:Err("BetterBars: wheel click could not resolve mouse position")
+        end
+    end)
+
+    -- Current colour swatch beside the wheel
+    local swatchBorder = colorPopup:CreateColorDrawable(0, 0, 0, 0.96, "background")
+    swatchBorder:SetExtent(30, 30)
+    swatchBorder:AddAnchor("TOPLEFT", colorPopup, 24, 44)
+    popupSwatch = colorPopup:CreateColorDrawable(1, 1, 1, 1, "background")
+    popupSwatch:SetExtent(28, 28)
+    popupSwatch:AddAnchor("TOPLEFT", colorPopup, 25, 45)
+    U.Label(colorPopup, "bbSwatchLbl", "Now", 24, 78, 32, 12, 11, C.muted, ALIGN.CENTER)
+
+    -- Brightness: the wheel is drawn at full value; this darkens the pick
+    popupValSlider = U.SliderRow(colorPopup, "bbPopupVal", "Bright", 258, 0, 100, 100, function(v)
+        popupState.v = v / 100
+        popupApplyHSV()
+    end)
+
+    -- RGB inputs + Set
+    local function rgbInput(id, x)
+        local inputBG = colorPopup:CreateColorDrawable(0.1, 0.1, 0.12, 0.9, "background")
+        inputBG:SetExtent(44, 20)
+        inputBG:AddAnchor("TOPLEFT", colorPopup, x, 288)
+        local input = W_CTRL.CreateEdit("bbPopup" .. id, colorPopup)
+        input:SetExtent(40, 18)
+        input:AddAnchor("TOPLEFT", colorPopup, x + 2, 289)
+        input:SetMaxTextLength(3)
+        input.style:SetAlign(ALIGN.CENTER)
+        input.style:SetColor(1, 1, 1, 1)
+        return input
+    end
+    U.Label(colorPopup, "bbPopupRLbl", "R", 24, 290, 12, 14, 12, {1, 0.45, 0.45, 1}, ALIGN.LEFT)
+    popupRGBInputs.r = rgbInput("R", 38)
+    U.Label(colorPopup, "bbPopupGLbl", "G", 96, 290, 12, 14, 12, {0.45, 1, 0.45, 1}, ALIGN.LEFT)
+    popupRGBInputs.g = rgbInput("G", 110)
+    U.Label(colorPopup, "bbPopupBLbl", "B", 168, 290, 12, 14, 12, {0.5, 0.6, 1, 1}, ALIGN.LEFT)
+    popupRGBInputs.b = rgbInput("B", 182)
+    U.FlatButton(colorPopup, "bbPopupSet", "Set", 244, 287, 52, 22, C.blue, function()
+        local function readInput(w)
+            local n = tonumber(w:GetText()) or 0
+            if n < 0 then n = 0 end
+            if n > 255 then n = 255 end
+            return math.floor(n)
+        end
+        popupSetRGB(readInput(popupRGBInputs.r), readInput(popupRGBInputs.g), readInput(popupRGBInputs.b))
+    end)
+
+    -- Preset swatches: 2 rows of 10
+    local cell, gap = 18, 2
+    local gridX = math.floor((W - (10 * cell + 9 * gap)) / 2)
+    for i, colorData in ipairs(colorPalette) do
+        local row = math.floor((i - 1) / 10)
+        local col = (i - 1) % 10
+        local square = colorPopup:CreateChildWidget("button", "bbPreset" .. i, 0, true)
+        square:SetExtent(cell, cell)
+        square:AddAnchor("TOPLEFT", colorPopup,
+            gridX + col * (cell + gap), 322 + row * (cell + gap))
+        square:SetText("")
+        local sqBorder = square:CreateColorDrawable(0, 0, 0, 0.9, "background")
+        sqBorder:AddAnchor("TOPLEFT", square, 0, 0)
+        sqBorder:AddAnchor("BOTTOMRIGHT", square, 0, 0)
+        local sqFill = square:CreateColorDrawable(
+            colorData.r / 255, colorData.g / 255, colorData.b / 255, 1, "background")
+        sqFill:AddAnchor("TOPLEFT", square, 1, 1)
+        sqFill:AddAnchor("BOTTOMRIGHT", square, -1, -1)
+        square:SetHandler("OnClick", function()
+            popupSetRGB(colorData.r, colorData.g, colorData.b)
+        end)
+    end
+
+    -- Default for the colour being edited, and Close
+    U.FlatButton(colorPopup, "bbPopupDefault", "Default", 52, 372, 120, 26, C.button, function()
+        local key = colorPopupTarget
+        local d = key and default_settings.colors[key]
+        if d then popupSetRGB(d.r, d.g, d.b) end
+    end)
+    U.FlatButton(colorPopup, "bbPopupCloseBtn", "Close", 188, 372, 120, 26, C.blue, function()
+        hideColorPopup()
+        updatePreview()
+    end)
+
+    colorPopup:EnableDrag(true)
+    colorPopup:SetHandler("OnDragStart", function(self)
+        self:StartMoving()
+        api.Cursor:ClearCursor()
+        api.Cursor:SetCursorImage(CURSOR_PATH.MOVE, 0, 0)
+    end)
+    colorPopup:SetHandler("OnDragStop", function(self)
+        self:StopMovingOrSizing()
+        api.Cursor:ClearCursor()
+    end)
+    colorPopup:Show(false)
+end
+
+-- =============================================
+-- FONT POPUP — level number font picker
+-- =============================================
+-- Every client font; each row renders IN its font, so the list previews
+-- itself. CJK-focused families at the bottom may lack pretty latin digits.
+local FONT_CHOICES = {
+    { path = "ui/font/yd_ygo540.ttf",                  label = "Default UI" },
+    { path = "ui/font/sd_leeyagil.ttf",                label = "Leeyagi (vanilla)" },
+    { path = "ui/font/frizquadratac.ttf",              label = "Friz Quadrata" },
+    { path = "ui/font/frizquadratactt-mod.ttf",        label = "Friz Quadrata TT" },
+    { path = "ui/font/frizqtcyr.ttf",                  label = "Friz Quadrata Cyr" },
+    { path = "ui/font/librebaskerville-bold.ttf",      label = "Libre Baskerville" },
+    { path = "ui/font/flareserif_821_roman.ttf",       label = "Flareserif 821" },
+    { path = "ui/font/nanumgothicbold.ttf",            label = "Nanum Gothic Bold" },
+    { path = "ui/font/yoon_firedgothic_b.ttf",         label = "Fired Gothic" },
+    { path = "ui/font/yoon_snail_b.ttf",               label = "Snail Bold" },
+    { path = "ui/font/pgm-mod.ttf",                    label = "PGM" },
+    { path = "ui/font/archeage_mail.ru_pgm-mod.ttf",   label = "PGM (Mail.ru)" },
+    { path = "ui/font/archeage_mail.ru_snail-mod.ttf", label = "Snail (Mail.ru)" },
+    { path = "ui/font/dfheistd-w5_1.ttf",              label = "DFHei W5" },
+    { path = "ui/font/dfheistd-w9_1.ttf",              label = "DFHei W9" },
+    { path = "ui/font/migmix-2p-regular.ttf",          label = "MigMix 2P" },
+    { path = "ui/font/fzlantinghei_r_gbk.ttf",         label = "FZ LantingHei" },
+    { path = "ui/font/fzlbk.ttf",                      label = "FZ LiBian" },
+}
+
+local fontPopup = nil
+local fontRowRefs = {}
+
+local function hideFontPopup()
+    if fontPopup then fontPopup:Show(false) end
+end
+
+local function refreshFontRows()
+    local cur = settings.getSettings().levelFont or "ui/font/yd_ygo540.ttf"
+    for _, row in ipairs(fontRowRefs) do
+        row.btn:SetTone(row.path == cur and C.active or C.button)
+    end
+end
+
+local function buildFontPopup()
+    if fontPopup then return end
+    local ROW_H, ROW_GAP = 22, 2
+    local W = 240
+    local H = 40 + #FONT_CHOICES * (ROW_H + ROW_GAP) + 10
+
+    fontPopup = api.Interface:CreateEmptyWindow("BetterBarsFontPopup", "UIParent")
+    fontPopup:SetExtent(W, H)
+    U.AddBg(fontPopup, 0, 0, 0, 0.96)
+    local body = fontPopup:CreateColorDrawable(C.dark[1], C.dark[2], C.dark[3], C.dark[4], "background")
+    body:AddAnchor("TOPLEFT", fontPopup, 1, 1)
+    body:AddAnchor("BOTTOMRIGHT", fontPopup, -1, -1)
+    local header = fontPopup:CreateColorDrawable(C.header[1], C.header[2], C.header[3], C.header[4], "background")
+    header:SetExtent(W - 2, 30)
+    header:AddAnchor("TOPLEFT", fontPopup, 1, 1)
+    local accent = fontPopup:CreateColorDrawable(C.accent[1], C.accent[2], C.accent[3], 0.85, "background")
+    accent:SetExtent(4, 30)
+    accent:AddAnchor("TOPLEFT", fontPopup, 1, 1)
+    U.Label(fontPopup, "bbFontTitle", "LEVEL FONT", 16, 7, 160, 16, 13, C.gold, ALIGN.LEFT)
+    U.FlatButton(fontPopup, "bbFontClose", "X", W - 32, 5, 22, 22, C.button, hideFontPopup)
+
+    for i, choice in ipairs(FONT_CHOICES) do
+        local y = 38 + (i - 1) * (ROW_H + ROW_GAP)
+        local btn = U.FlatButton(fontPopup, "bbFontRow" .. i, choice.label,
+            10, y, W - 20, ROW_H, C.button, function()
+                settings.updateSetting("levelFont", choice.path)
+                settings.saveSettings()
+                refreshFontRows()
+                updatePreview()
+            end)
+        -- The row IS the preview: render its label in the font it offers
+        pcall(function() btn._text.style:SetFont(choice.path, 13) end)
+        table.insert(fontRowRefs, { btn = btn, path = choice.path })
+    end
+
+    fontPopup:EnableDrag(true)
+    fontPopup:SetHandler("OnDragStart", function(self)
+        self:StartMoving()
+        api.Cursor:ClearCursor()
+        api.Cursor:SetCursorImage(CURSOR_PATH.MOVE, 0, 0)
+    end)
+    fontPopup:SetHandler("OnDragStop", function(self)
+        self:StopMovingOrSizing()
+        api.Cursor:ClearCursor()
+    end)
+    fontPopup:Show(false)
+end
+
+local function openFontPopup()
+    buildFontPopup()
+    hideColorPopup()
+    refreshFontRows()
+    if settingsWindow then
+        fontPopup:RemoveAllAnchors()
+        fontPopup:AddAnchor("TOPLEFT", settingsWindow, "TOPRIGHT", 5, 0)
+    end
+    fontPopup:Show(true)
+    fontPopup:Raise()
+end
+
+local function openColorPopup(key, title)
+    buildColorPopup()
+    hideFontPopup()
+    colorPopupTarget = key
+    local cv = colorValues[key] or { r = 255, g = 255, b = 255, a = 1 }
+    popupState.h, popupState.s, popupState.v = rgbToHsv(cv.r, cv.g, cv.b)
+    if popupValSlider then popupValSlider.SetValue(math.floor(popupState.v * 100 + 0.5)) end
+    if popupTitleLbl then popupTitleLbl:SetText("COLOR - " .. title) end
+    popupSyncInputs()
+    if settingsWindow then
+        colorPopup:RemoveAllAnchors()
+        colorPopup:AddAnchor("TOPLEFT", settingsWindow, "TOPRIGHT", 5, 0)
+    end
+    colorPopup:Show(true)
+    colorPopup:Raise()
+    updatePreview()
+end
+
+
+-- =============================================
+-- One-time welcome card
+-- =============================================
+-- Shown on the first load only. Dismissing it sets infoCardSeen, which persists
+-- like any other setting, so it never reappears.
+local infoCardWindow
+
+local function showInfoCard()
+    if infoCardWindow then
+        infoCardWindow:Show(true)
+        return
+    end
+
+    local width, height = 380, 168
+    infoCardWindow = api.Interface:CreateEmptyWindow("BetterBarsInfoCard", "UIParent")
+    infoCardWindow:SetExtent(width, height)
+    infoCardWindow:AddAnchor("CENTER", "UIParent", 0, -60)
+    U.AddBg(infoCardWindow, 0, 0, 0, 0.96)
+
+    local body = infoCardWindow:CreateColorDrawable(C.dark[1], C.dark[2], C.dark[3], C.dark[4], "background")
+    body:AddAnchor("TOPLEFT", infoCardWindow, 1, 1)
+    body:AddAnchor("BOTTOMRIGHT", infoCardWindow, -1, -1)
+    body:Show(true)
+
+    local header = infoCardWindow:CreateColorDrawable(C.header[1], C.header[2], C.header[3], C.header[4], "background")
+    header:SetExtent(width - 2, 30)
+    header:AddAnchor("TOPLEFT", infoCardWindow, 1, 1)
+    header:Show(true)
+
+    local accent = infoCardWindow:CreateColorDrawable(C.accent[1], C.accent[2], C.accent[3], C.accent[4], "background")
+    accent:SetExtent(4, 30)
+    accent:AddAnchor("TOPLEFT", infoCardWindow, 1, 1)
+    accent:Show(true)
+
+    U.Label(infoCardWindow, "bbInfoTitle", "BetterBars", 16, 7, 220, 16, 15, C.gold, ALIGN.LEFT)
+
+    U.Label(infoCardWindow, "bbInfoL1",
+        "This addon is completely free.", 20, 46, width - 40, 16, 13, C.white, ALIGN.LEFT)
+    U.Label(infoCardWindow, "bbInfoL2",
+        "If you find it useful, in-game donations are appreciated", 20, 68, width - 40, 16, 13, C.muted, ALIGN.LEFT)
+    U.Label(infoCardWindow, "bbInfoL3",
+        "but never expected.", 20, 86, width - 40, 16, 13, C.muted, ALIGN.LEFT)
+    U.Label(infoCardWindow, "bbInfoL4",
+        "Character:  Dehling", 20, 110, width - 40, 16, 14, C.gold, ALIGN.LEFT)
+
+    U.FlatButton(infoCardWindow, "bbInfoClose", "Got it", width - 116, height - 40, 96, 26, C.blue, function()
+        infoCardWindow:Show(false)
+    end)
+
+    infoCardWindow:EnableDrag(true)
+    infoCardWindow:SetHandler("OnDragStart", function(self) self:StartMoving() end)
+    infoCardWindow:SetHandler("OnDragStop", function(self) self:StopMovingOrSizing() end)
+    infoCardWindow:Show(true)
+end
+
+local function maybeShowInfoCard()
     local s = settings.getSettings()
-    for key, btnInfo in pairs(btnRefs) do
-        setToggle(btnInfo.btn, s[key] or s.barHeight and s.barHeight[key] or s.backgroundOpacity and math.floor(s.backgroundOpacity * 10), btnInfo.text)
+    if s.infoCardSeen ~= true then
+        pcall(showInfoCard)
+        -- Marked seen on SHOW, not on the button: dismissing the card any
+        -- other way (a reload with it open, dragging it off and forgetting)
+        -- used to leave the flag unset, so the card greeted every session.
+        -- The ? button reopens it on demand regardless.
+        settings.updateSetting("infoCardSeen", true)
+        settings.saveSettings()
     end
 end
 
--- Increment/decrement a numeric setting
-local function shiftSetting(key, delta, min, max, displayDivisor)
-    local s = settings.getSettings()
-    local val
-    if key == "barHeight_hp" then
-        val = (s.barHeight and s.barHeight.hp) or 17
-    elseif key == "barHeight_mp" then
-        val = (s.barHeight and s.barHeight.mp) or 15
-    elseif key == "backgroundOpacity" then
-        val = math.floor((s.backgroundOpacity or 0.6) * 10)
-    else
-        val = s[key]
-    end
-    val = (val or 0) + delta
-    if val < min then val = min end
-    if val > max then val = max end
-    
-    if key == "barHeight_hp" then
-        local bh = s.barHeight or {}
-        bh.hp = val
-        settings.updateSetting("barHeight", bh)
-    elseif key == "barHeight_mp" then
-        local bh = s.barHeight or {}
-        bh.mp = val
-        settings.updateSetting("barHeight", bh)
-    elseif key == "backgroundOpacity" then
-        settings.updateSetting(key, val / 10)
-    else
-        settings.updateSetting(key, val)
-    end
-    settings.saveSettings()
-    return val
-end
-
--- Cycle through label format options
+-- Label format cycle order and display names (the button itself lives in the
+-- LABELS section below)
 local fmtCycle = {"both", "current", "percent", "hide"}
 local fmtLabels = {both = "Both", current = "Current", percent = "Percent", hide = "Hide"}
-local function cycleLabelFormat()
-    local s = settings.getSettings()
-    local cur = s.labelFormat or "both"
-    local idx = 1
-    for i, v in ipairs(fmtCycle) do
-        if v == cur then idx = i; break end
-    end
-    idx = (idx % #fmtCycle) + 1
-    settings.updateSetting("labelFormat", fmtCycle[idx])
-    settings.saveSettings()
-    if btnRefs.labelFormat and btnRefs.labelFormat.btn then
-        btnRefs.labelFormat.btn:SetCleanText(fmtLabels[fmtCycle[idx]] or "Both")
-    end
-end
 
 -- Function to initialize settings page — Power Ranger ON style
 local function initializeSettingsPage()
@@ -662,7 +1052,9 @@ local function initializeSettingsPage()
     
     loadColorValues()
     local s = settings.getSettings()
-    local width, height = 420, 400
+    -- Height is provisional: the real value is computed from the stacked
+    -- sections at the bottom of the build (COLORS grows with bar heights)
+    local width, height = 420, 598
     
     -- Shell window (no chrome, just dark fill + header)
     settingsWindow = api.Interface:CreateEmptyWindow("BetterBarsSettings", "UIParent")
@@ -685,7 +1077,48 @@ local function initializeSettingsPage()
     -- Title
     local title = U.Label(settingsWindow, "BetterBars_title", "BetterBars", 16, 8, 200, 18, 17, C.gold, ALIGN.LEFT)
     
-    -- Close button
+    -- Header buttons: Reset, help, close. Reset lives up here now - every
+    -- control saves live, so the old bottom Save/Reset row is gone.
+    --
+    -- Reset asks twice: the first click arms it - red, "Are you sure?" - and
+    -- only a second click within 5 seconds resets. api:DoIn drives the
+    -- expiry; the token guards against a stale timer disarming a fresh arm.
+    local resetArmed = false
+    local resetArmToken = 0
+    local resetBtn
+    local RESET_RED = {0.45, 0.10, 0.10, 0.95}
+    local function disarmReset()
+        resetArmed = false
+        if resetBtn then
+            resetBtn:SetCleanText("Reset")
+            resetBtn:SetTone(C.button)
+        end
+    end
+    resetBtn = U.FlatButton(settingsWindow, "BetterBarsSettings_reset", "Reset",
+        width - 160, 7, 92, 22, C.button, function()
+            if resetArmed then
+                disarmReset()
+                resetSettings()
+                return
+            end
+            resetArmed = true
+            resetArmToken = resetArmToken + 1
+            local token = resetArmToken
+            resetBtn:SetCleanText("Are you sure?")
+            resetBtn:SetTone(RESET_RED)
+            pcall(function()
+                api:DoIn(5000, function()
+                    if resetArmed and resetArmToken == token then
+                        disarmReset()
+                    end
+                end)
+            end)
+        end)
+
+    U.FlatButton(settingsWindow, "BetterBarsSettings_help", "?", width - 62, 7, 22, 22, C.button, function()
+        showInfoCard()
+    end)
+
     U.FlatButton(settingsWindow, "BetterBarsSettings_close", "X", width - 36, 7, 22, 22, C.button, function()
         settingsWindow:Show(false)
         isSettingsPageOpened = false
@@ -705,153 +1138,314 @@ local function initializeSettingsPage()
     end)
     
     local y = 52
-    
+
     -- =============================================
-    -- SECTION: BARS
+    -- SECTION: BARS — geometry sliders + toggles
     -- =============================================
-    local barP = createSectionPanel(settingsWindow, "barPanel", 18, y, 384, 100, "BARS")
-    y = y + 108
-    btnRefs = {}
-    
-    -- HP Height (centered pair with MP, wider spacing for font compatibility)
-    local hpVal = (s.barHeight and s.barHeight.hp) or 17
-    U.ChildLabel(barP, "hpHeightLabel", "HP", 58, 32, 22, 14, 14, C.white, ALIGN.LEFT)
-    U.ChildFlatButton(barP, "hpHeightDown", "-", 88, 30, 22, 20, C.button, function()
-        local v = shiftSetting("barHeight_hp", -1, 5, 50)
-        settingsWindow.hpHeightVal:SetText(tostring(v))
-    end)
-    settingsWindow.hpHeightVal = U.ChildLabel(barP, "hpHeightValue", tostring(hpVal), 118, 32, 24, 14, 14, C.white, ALIGN.CENTER)
-    U.ChildFlatButton(barP, "hpHeightUp", "+", 150, 30, 22, 20, C.button, function()
-        local v = shiftSetting("barHeight_hp", 1, 5, 50)
-        settingsWindow.hpHeightVal:SetText(tostring(v))
-    end)
-    
-    -- MP Height (centered pair with HP)
-    local mpVal = (s.barHeight and s.barHeight.mp) or 15
-    U.ChildLabel(barP, "mpHeightLabel", "MP", 212, 32, 22, 14, 14, C.white, ALIGN.LEFT)
-    U.ChildFlatButton(barP, "mpHeightDown", "-", 242, 30, 22, 20, C.button, function()
-        local v = shiftSetting("barHeight_mp", -1, 5, 50)
-        settingsWindow.mpHeightVal:SetText(tostring(v))
-    end)
-    settingsWindow.mpHeightVal = U.ChildLabel(barP, "mpHeightValue", tostring(mpVal), 272, 32, 24, 14, 14, C.white, ALIGN.CENTER)
-    U.ChildFlatButton(barP, "mpHeightUp", "+", 304, 30, 22, 20, C.button, function()
-        local v = shiftSetting("barHeight_mp", 1, 5, 50)
-        settingsWindow.mpHeightVal:SetText(tostring(v))
-    end)
-    
-    -- Background opacity (centered, wider spacing)
-    local opacVal = math.floor((s.backgroundOpacity or 0.6) * 10)
-    U.ChildLabel(barP, "opacLabel", "BG", 118, 60, 20, 14, 14, C.white, ALIGN.LEFT)
-    U.ChildFlatButton(barP, "opacDown", "-", 181, 58, 22, 20, C.button, function()
-        local v = shiftSetting("backgroundOpacity", -1, 0, 10)
-        settingsWindow.opacVal:SetText(tostring(v))
-    end)
-    settingsWindow.opacVal = U.ChildLabel(barP, "opacValue", tostring(opacVal), 211, 60, 24, 14, 14, C.white, ALIGN.CENTER)
-    U.ChildFlatButton(barP, "opacUp", "+", 243, 58, 22, 20, C.button, function()
-        local v = shiftSetting("backgroundOpacity", 1, 0, 10)
-        settingsWindow.opacVal:SetText(tostring(v))
-    end)
-    
+    local barP = createSectionPanel(settingsWindow, "barPanel", 18, y, 384, 144, "BARS")
+    y = y + 152
+
+    local hpSlider = U.SliderRow(barP, "bbHpH", "HP height", 32, 5, 50,
+        (s.barHeight and s.barHeight.hp) or 17, function(v)
+            local s2 = settings.getSettings()
+            local bh = s2.barHeight or {}
+            bh.hp = v
+            settings.updateSetting("barHeight", bh)
+            settings.saveSettings()
+            updatePreview()
+        end)
+    local mpSlider = U.SliderRow(barP, "bbMpH", "MP height", 58, 5, 50,
+        (s.barHeight and s.barHeight.mp) or 13, function(v)
+            local s2 = settings.getSettings()
+            local bh = s2.barHeight or {}
+            bh.mp = v
+            settings.updateSetting("barHeight", bh)
+            settings.saveSettings()
+            updatePreview()
+        end)
+    local bgSlider = U.SliderRow(barP, "bbBgO", "Background", 84, 0, 11,
+        math.floor((s.backgroundOpacity or 1) * 10 + 0.5), function(v)
+            settings.updateSetting("backgroundOpacity", v / 10)
+            settings.saveSettings()
+            updatePreview()
+        end, function(v) return string.format("%.1f", v / 10) end)
+
+    -- Bottom row. "Retail fill" replaces the old texture cycle - ON is the
+    -- retail sprite, OFF the vanilla flat fill; other texture names still
+    -- work if set by hand in settings. The bar-gap toggle is retired from
+    -- the UI (the merged-border reference look stays the default; the
+    -- showBarSeparation setting still works if hand-edited).
+    local fillCheck = U.FlatCheck(barP, "bbFillCheck", "Texture", 14, 114, 76,
+        function() return (settings.getSettings().barTexture or "none") ~= "none" end,
+        function()
+            local s2 = settings.getSettings()
+            local on = (s2.barTexture or "none") ~= "none"
+            settings.updateSetting("barTexture", on and "none" or "bar_retail")
+            settings.saveSettings()
+            updatePreview()
+        end)
+    -- Level number font picker
+    U.ChildFlatButton(barP, "bbFontBtn", "Font", 152, 112, 96, 22, C.blue,
+        openFontPopup, ALIGN.CENTER)
+    -- Assigned after the COLORS section builds; hides the Cast colour
+    -- control while the cast bar itself is off.
+    local syncCastColorUI
+    local castCheck
+    if CAST_BAR_ENABLED then
+        castCheck = U.FlatCheck(barP, "bbCastCheck", "Cast bar", 290, 114, 82,
+            function() return settings.getSettings().showCastBar ~= false end,
+            function()
+                local s2 = settings.getSettings()
+                settings.updateSetting("showCastBar", not (s2.showCastBar ~= false))
+                settings.saveSettings()
+                if syncCastColorUI then syncCastColorUI() end
+            end)
+    end
+
     -- =============================================
-    -- SECTION: COLORS
+    -- SECTION: COLORS — cubes + live preview
     -- =============================================
-    local colorP = createSectionPanel(settingsWindow, "colorPanel", 18, y, 384, 76, "COLORS")
-    y = y + 84
-    
-    -- HP Color cube (centered, bigger)
-    U.ChildLabel(colorP, "hpColorLabel", "HP", 86, 39, 22, 14, 14, C.white, ALIGN.LEFT)
-    local hpCube = U.ColorCube(colorP, "hpColorCube", 112, 36, "hp", function()
-        colorPopupTarget = "hp"
-        buildColorPopup()
-        colorPopup:RemoveAllAnchors()
-        colorPopup:AddAnchor("TOPLEFT", settingsWindow, "TOPRIGHT", 5, 0)
-        colorPopup:Show(true)
-        colorPopup:Raise()
-    end, 28)
-    
-    -- MP Color cube (centered, bigger)
-    U.ChildLabel(colorP, "mpColorLabel", "MP", 170, 39, 22, 14, 14, C.white, ALIGN.LEFT)
-    local mpCube = U.ColorCube(colorP, "mpColorCube", 196, 36, "mp", function()
-        colorPopupTarget = "mp"
-        buildColorPopup()
-        colorPopup:RemoveAllAnchors()
-        colorPopup:AddAnchor("TOPLEFT", settingsWindow, "TOPRIGHT", 5, 0)
-        colorPopup:Show(true)
-        colorPopup:Raise()
-    end, 28)
-    
-    -- EHP Color cube (centered, bigger, extra padding)
-    U.ChildLabel(colorP, "ehpColorLabel", "Enemy", 240, 39, 44, 14, 14, C.white, ALIGN.LEFT)
-    local ehpCube = U.ColorCube(colorP, "ehpColorCube", 306, 36, "ehp", function()
-        colorPopupTarget = "ehp"
-        buildColorPopup()
-        colorPopup:RemoveAllAnchors()
-        colorPopup:AddAnchor("TOPLEFT", settingsWindow, "TOPRIGHT", 5, 0)
-        colorPopup:Show(true)
-        colorPopup:Raise()
-    end, 28)
-    
-    -- Store cube refs for color updates
+    -- Panel height follows the bar heights at build time so the preview fits;
+    -- resizing the sliders afterwards may spill slightly until reopened.
+    -- Heights are FILL heights (ApplyBarBox semantics); each box adds 4.
+    local pvHpH = (s.barHeight and s.barHeight.hp) or 17
+    local pvMpH = (s.barHeight and s.barHeight.mp) or 13
+    local colorPH = 70 + math.max(38, pvHpH + pvMpH + 8) + 12
+    local colorP = createSectionPanel(settingsWindow, "colorPanel", 18, y, 384, colorPH, "COLORS")
+    y = y + colorPH + 8
+
+    -- Three cubes, centered across the panel
+    U.ChildLabel(colorP, "hpColorLabel", "HP", 40, 39, 22, 14, 13, C.gold, ALIGN.LEFT)
+    local hpCube = U.ColorCube(colorP, "hpColorCube", 64, 34, "hp", function()
+        openColorPopup("hp", "HP")
+    end, 24)
+    U.ChildLabel(colorP, "mpColorLabel", "MP", 140, 39, 24, 14, 13, C.gold, ALIGN.LEFT)
+    local mpCube = U.ColorCube(colorP, "mpColorCube", 166, 34, "mp", function()
+        openColorPopup("mp", "MP")
+    end, 24)
+    U.ChildLabel(colorP, "ehpColorLabel", "Enemy", 240, 39, 46, 14, 13, C.gold, ALIGN.LEFT)
+    local ehpCube = U.ColorCube(colorP, "ehpColorCube", 290, 34, "ehp", function()
+        openColorPopup("ehp", "Enemy")
+    end, 24)
     wndColorCubes = { hp = hpCube, mp = mpCube, ehp = ehpCube }
-    
+
+    if CAST_BAR_ENABLED then
+        -- NOTE: when this wakes up, the cube row needs its four-across
+        -- squeeze back (see git history) - these coords overlap Enemy.
+        local castColorLbl = U.ChildLabel(colorP, "castColorLabel", "Cast", 286, 39, 34, 14, 13, C.gold, ALIGN.LEFT)
+        local castCube = U.ColorCube(colorP, "castColorCube", 322, 34, "cast", function()
+            openColorPopup("cast", "Cast")
+        end, 24)
+        wndColorCubes.cast = castCube
+
+        -- Cast colour only makes sense while the cast bar exists; hide the
+        -- control with the feature. If the popup is editing it when it goes,
+        -- the popup goes too.
+        syncCastColorUI = function()
+            local on = settings.getSettings().showCastBar ~= false
+            pcall(function() castColorLbl:Show(on) end)
+            pcall(function() castCube:Show(on) end)
+            if not on and colorPopup and colorPopup:IsVisible() and colorPopupTarget == "cast" then
+                hideColorPopup()
+            end
+        end
+        syncCastColorUI()
+    end
+
+    -- Live preview: fake HP + MP bars painted from colorValues and the
+    -- current settings. updatePreview() re-applies colours, fill, format,
+    -- font size, bar heights and the gap on every change. While the popup
+    -- edits the enemy colour, the HP bar wears it - no extra toggle needed.
+    previewRefs = {
+        panel = colorP,
+        x = 40,
+        y = 70,
+        hp = buildPreviewBar(colorP, "HP", 40, 70, 304, pvHpH + 4, "bar_retail", 300, 17),
+        mp = buildPreviewBar(colorP, "MP", 40, 70 + pvHpH + 2, 304, pvMpH + 4, "bar_retail_mp", 300, 13),
+    }
+    -- Mock level digit left of the bars; follows the Font pick live
+    previewRefs.levelLbl = U.ChildLabel(colorP, "bbPrevLevel", "47", 4, 74, 34, 26, 22, C.gold, ALIGN.CENTER)
+    updatePreview()
+
     -- =============================================
     -- SECTION: LABELS
     -- =============================================
-    local labelP = createSectionPanel(settingsWindow, "labelPanel", 18, y, 384, 64, "LABELS")
-    y = y + 72
-    
-    U.ChildLabel(labelP, "labelFormatTitle", "Format", 43, 32, 44, 14, 14, C.gold, ALIGN.LEFT)
-    local fmtBtn = U.ChildFlatButton(labelP, "labelFormatBtn", fmtLabels[s.labelFormat or "both"] or "Both", 95, 28, 90, 22, C.blue, cycleLabelFormat)
-    btnRefs.labelFormat = { btn = fmtBtn, text = "Format" }
-    
-    -- Font size (same row, right of format)
-    local fsVal = s.labelFontSize or 14
-    U.ChildLabel(labelP, "fsLabel", "Size", 215, 32, 30, 14, 14, C.gold, ALIGN.LEFT)
-    U.ChildFlatButton(labelP, "fsDown", "-", 253, 28, 22, 22, C.button, function()
-        local s2 = settings.getSettings()
-        local v = (s2.labelFontSize or 14) - 1
-        if v < 8 then v = 8 end
-        settings.updateSetting("labelFontSize", v)
-        settings.saveSettings()
-        settingsWindow.fsVal:SetText(tostring(v))
-    end)
-    settingsWindow.fsVal = U.ChildLabel(labelP, "fsValue", tostring(fsVal), 283, 30, 28, 14, 14, C.white, ALIGN.CENTER)
-    U.ChildFlatButton(labelP, "fsUp", "+", 319, 28, 22, 22, C.button, function()
-        local s2 = settings.getSettings()
-        local v = (s2.labelFontSize or 14) + 1
-        if v > 30 then v = 30 end
-        settings.updateSetting("labelFontSize", v)
-        settings.saveSettings()
-        settingsWindow.fsVal:SetText(tostring(v))
-    end)
-    
+    local labelP = createSectionPanel(settingsWindow, "labelPanel", 18, y, 384, 118, "LABELS")
+    y = y + 126
+
+    U.ChildLabel(labelP, "labelFormatTitle", "Format", 14, 34, 50, 14, 13, C.gold, ALIGN.LEFT)
+    local fmtBtn
+    fmtBtn = U.ChildFlatButton(labelP, "labelFormatBtn", fmtLabels[s.labelFormat or "both"] or "Both",
+        120, 30, 96, 22, C.blue, function()
+            local s2 = settings.getSettings()
+            local cur = s2.labelFormat or "both"
+            local idx = 1
+            for i, v in ipairs(fmtCycle) do
+                if v == cur then idx = i break end
+            end
+            idx = (idx % #fmtCycle) + 1
+            settings.updateSetting("labelFormat", fmtCycle[idx])
+            settings.saveSettings()
+            fmtBtn:SetCleanText(fmtLabels[fmtCycle[idx]] or "Both")
+            updatePreview()
+        end, ALIGN.CENTER)
+
+    local fsSlider = U.SliderRow(labelP, "bbFs", "Text size", 60, 8, 30,
+        s.labelFontSize or 11, function(v)
+            settings.updateSetting("labelFontSize", v)
+            settings.saveSettings()
+            updatePreview()
+        end)
+
+    local houseCheck = U.FlatCheck(labelP, "bbHouseCheck", "House HP", 14, 88, 94,
+        function() return settings.getSettings().showHousingHP == true end,
+        function()
+            local s2 = settings.getSettings()
+            settings.updateSetting("showHousingHP", not (s2.showHousingHP == true))
+            settings.saveSettings()
+        end)
+    -- Engine text shadow on the HP/MP numbers (the same shading level/name use)
+    local shadowCheck = U.FlatCheck(labelP, "bbShadowCheck", "Shadow", 152, 88, 80,
+        function() return settings.getSettings().labelShadow == true end,
+        function()
+            local s2 = settings.getSettings()
+            settings.updateSetting("labelShadow", not (s2.labelShadow == true))
+            settings.saveSettings()
+        end)
+
     -- =============================================
-    -- BOTTOM BUTTONS
+    -- SECTION: INFO (class, gear score, guild)
     -- =============================================
-    U.FlatButton(settingsWindow, "bbSaveBtn", "Save", 56, y + 10, 144, 34, C.blue, saveSettings)
-    U.FlatButton(settingsWindow, "bbResetBtn", "Reset", 220, y + 10, 144, 34, C.button, resetSettings)
-    
-    -- Store refresh function for use after reset
+    local infoP = createSectionPanel(settingsWindow, "infoPanel", 18, y, 384, 166, "INFO")
+    y = y + 174
+
+    local classCheck = U.FlatCheck(infoP, "bbClassCheck", "Class", 14, 34, 68,
+        function() return settings.getSettings().showClass == true end,
+        function()
+            local s2 = settings.getSettings()
+            settings.updateSetting("showClass", not (s2.showClass == true))
+            settings.saveSettings()
+        end)
+    local gsCheck = U.FlatCheck(infoP, "bbGsCheck", "GS", 150, 34, 50,
+        function() return settings.getSettings().showGearScore == true end,
+        function()
+            local s2 = settings.getSettings()
+            settings.updateSetting("showGearScore", not (s2.showGearScore == true))
+            settings.saveSettings()
+        end)
+    local guildCheck = U.FlatCheck(infoP, "bbGuildCheck", "Guild", 270, 34, 68,
+        function() return settings.getSettings().showGuild == true end,
+        function()
+            local s2 = settings.getSettings()
+            settings.updateSetting("showGuild", not (s2.showGuild == true))
+            settings.saveSettings()
+        end)
+
+    -- Per-item anchor offsets: pick the item, then drive its X and Y. The
+    -- write path goes through updateSetting("infoOffsets", ...) so the whole
+    -- nested table lands in the engine store on save.
+    local infoItems = { "class", "gs", "guild" }
+    local infoItemLabels = { class = "Class", gs = "GS", guild = "Guild" }
+    local curInfoItem = "class"
+    local xSlider, ySlider, sizeSlider
+
+    local function infoOff()
+        local s2 = settings.getSettings()
+        local t = s2.infoOffsets or {}
+        t[curInfoItem] = t[curInfoItem] or { x = 0, y = 0, size = 12 }
+        return t, t[curInfoItem]
+    end
+
+    local infoShadowCheck = U.FlatCheck(infoP, "bbInfoShadowCheck", "Shadow", 270, 62, 80,
+        function() return settings.getSettings().infoShadow == true end,
+        function()
+            local s2 = settings.getSettings()
+            settings.updateSetting("infoShadow", not (s2.infoShadow == true))
+            settings.saveSettings()
+        end)
+
+    U.ChildLabel(infoP, "bbInfoOffTitle", "Offsets", 14, 64, 52, 14, 13, C.gold, ALIGN.LEFT)
+    local itemBtn
+    itemBtn = U.ChildFlatButton(infoP, "bbInfoItemBtn", infoItemLabels[curInfoItem],
+        120, 60, 96, 22, C.blue, function()
+            local idx = 1
+            for i, v in ipairs(infoItems) do
+                if v == curInfoItem then idx = i break end
+            end
+            curInfoItem = infoItems[(idx % #infoItems) + 1]
+            itemBtn:SetCleanText(infoItemLabels[curInfoItem])
+            local _, o = infoOff()
+            xSlider.SetValue(o.x or 0)
+            ySlider.SetValue(o.y or 0)
+            sizeSlider.SetValue(o.size or 12)
+        end, ALIGN.CENTER)
+
+    xSlider = U.SliderRow(infoP, "bbInfoX", "X offset", 88, -150, 150,
+        (s.infoOffsets and s.infoOffsets.class and s.infoOffsets.class.x) or 0,
+        function(v)
+            local t, o = infoOff()
+            o.x = v
+            settings.updateSetting("infoOffsets", t)
+            settings.saveSettings()
+        end)
+    ySlider = U.SliderRow(infoP, "bbInfoY", "Y offset", 114, -60, 60,
+        (s.infoOffsets and s.infoOffsets.class and s.infoOffsets.class.y) or 0,
+        function(v)
+            local t, o = infoOff()
+            o.y = v
+            settings.updateSetting("infoOffsets", t)
+            settings.saveSettings()
+        end)
+
+    -- Per-item font size, bound to the same item selector as X/Y
+    sizeSlider = U.SliderRow(infoP, "bbInfoSz", "Size", 140, 6, 30,
+        (s.infoOffsets and s.infoOffsets.class and s.infoOffsets.class.size) or 12,
+        function(v)
+            local t, o = infoOff()
+            o.size = v
+            settings.updateSetting("infoOffsets", t)
+            settings.saveSettings()
+        end)
+
+    -- =============================================
+    -- BOTTOM: credit label (TTP convention). Reset lives in the header and
+    -- everything saves live, so no button row down here.
+    -- =============================================
+    local credit = U.Label(settingsWindow, "bbCredit", "BetterBars - " .. ADDON_VERSION .. " - By Dehling",
+        6, y + 4, 260, 11, 10, {0.30, 0.31, 0.35, 1}, ALIGN.LEFT)
+    credit:Clickable(false)
+
+    -- The window is sized to the content: sections stacked to y, credit 20
+    height = y + 20
+    settingsWindow:SetExtent(width, height)
+
+    -- Refresh every control from saved settings (used after reset)
     local function refreshDisplayValues()
         local s2 = settings.getSettings()
-        if settingsWindow.hpHeightVal then
-            settingsWindow.hpHeightVal:SetText(tostring(s2.barHeight and s2.barHeight.hp or 17))
-        end
-        if settingsWindow.mpHeightVal then
-            settingsWindow.mpHeightVal:SetText(tostring(s2.barHeight and s2.barHeight.mp or 15))
-        end
-        if settingsWindow.opacVal then
-            settingsWindow.opacVal:SetText(tostring(math.floor((s2.backgroundOpacity or 0.6) * 10)))
-        end
-        if fmtBtn then
-            fmtBtn:SetCleanText(fmtLabels[s2.labelFormat or "both"] or "Both")
-        end
-        if settingsWindow.fsVal then
-            settingsWindow.fsVal:SetText(tostring(s2.labelFontSize or 14))
-        end
+        hpSlider.SetValue((s2.barHeight and s2.barHeight.hp) or 17)
+        mpSlider.SetValue((s2.barHeight and s2.barHeight.mp) or 13)
+        bgSlider.SetValue(math.floor((s2.backgroundOpacity or 1) * 10 + 0.5))
+        fsSlider.SetValue(s2.labelFontSize or 11)
+        local io2 = (s2.infoOffsets and s2.infoOffsets[curInfoItem]) or {}
+        sizeSlider.SetValue(io2.size or 12)
+        fmtBtn:SetCleanText(fmtLabels[s2.labelFormat or "both"] or "Both")
+        fillCheck.Refresh()
+        if castCheck then castCheck.Refresh() end
+        if syncCastColorUI then syncCastColorUI() end
+        houseCheck.Refresh()
+        shadowCheck.Refresh()
+        classCheck.Refresh()
+        gsCheck.Refresh()
+        guildCheck.Refresh()
+        infoShadowCheck.Refresh()
+        local s3 = settings.getSettings()
+        local o = (s3.infoOffsets and s3.infoOffsets[curInfoItem]) or { x = 0, y = 0 }
+        xSlider.SetValue(o.x or 0)
+        ySlider.SetValue(o.y or 0)
+        updatePreview()
     end
     wndRefreshDisplayValues = refreshDisplayValues
-    
+
     -- Update color cubes from saved values
     local function updateColorCubes()
         for key, cube in pairs(wndColorCubes) do
@@ -860,6 +1454,7 @@ local function initializeSettingsPage()
                 cube._fill:SetColor(cv.r / 255, cv.g / 255, cv.b / 255, cv.a or 1)
             end
         end
+        updatePreview()
     end
     updateColorCubes()
     wndUpdateColorCubes = updateColorCubes
@@ -868,6 +1463,7 @@ local function initializeSettingsPage()
     function settingsWindow:OnHide()
         isSettingsPageOpened = false
         hideColorPopup()
+        hideFontPopup()
     end
     
     -- Center on screen
@@ -880,6 +1476,9 @@ local function initializeSettingsPage()
 end
 
 -- Function to open settings window
+-- Shown the first time the settings window is opened rather than at load, so
+-- it lands when the player is already looking at the addon instead of
+-- interrupting them mid-game.
 local function openSettingsWindow()
     -- Load current settings
             currentSettings = { colors = settings.getColors() }
@@ -898,6 +1497,14 @@ local function openSettingsWindow()
         end
 end
 
+-- First open shows the card once; the ? button re-opens it any time.
+local realOpenSettingsWindow = openSettingsWindow
+openSettingsWindow = function(...)
+    local r = realOpenSettingsWindow(...)
+    pcall(maybeShowInfoCard)
+    return r
+end
+
 -- Function to unload settings page
 local function unload()
         if settingsWindow then
@@ -910,12 +1517,21 @@ local function unload()
             colorPopup:Show(false)
             colorPopup = nil
         end
+
+        if fontPopup then
+            fontPopup:Show(false)
+            fontPopup = nil
+        end
+        fontRowRefs = {}
     
         controls = {}
         currentSettings = {}
         colorValues = {}
         popupRGBInputs = {}
-        popupCustomPicker = nil
+        previewRefs = nil
+        popupSwatch = nil
+        popupValSlider = nil
+        popupTitleLbl = nil
         wndColorCubes = {}
         wndUpdateColorCubes = nil
         wndRefreshDisplayValues = nil
@@ -923,7 +1539,9 @@ end
 
 -- Return the settings page module
 local settings_page = {
+    ADDON_VERSION = ADDON_VERSION,
     openSettingsWindow = openSettingsWindow,
+    maybeShowInfoCard = maybeShowInfoCard,
     unload = unload,
     Load = initializeSettingsPage,
     Unload = unload

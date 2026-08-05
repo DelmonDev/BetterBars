@@ -1,13 +1,66 @@
-
 # BetterBars
 
-Use the command bb in the chat or simply go to the addon list ingame to configure the BetterBar settings for unitframe colors
+Restyles the vanilla ArcheAge Classic unit frames to match the newer client's
+look — bar art, backdrop and colours measured pixel-for-pixel from its own
+texture atlas.
 
+Type `bb` in chat, or open it from the addon list, to configure everything.
 
-## Settings Ingame
+## Features
 
-![App Screenshot](https://media.discordapp.net/attachments/1271633674336604191/1366547283310673960/image.png?ex=681157d5&is=68100655&hm=5be2196d476c4cee61b087dcb0118e6660ebe902862399c5e9503fdec99a907b&=)
+- **Retail-style bars** — the newer client's exact backdrop cell (border,
+  inner shadow, feathered corners) and its fill sprites, on every unit frame:
+  player, target, target-of-target, watch target and pets.
+- **Full colour control** — HP, MP and Enemy colours with an HSV colour
+  wheel, brightness slider, RGB input and curated presets. Every change
+  applies live, including the damage trail, which is derived from your bar
+  colour the way the newer client does it.
+- **Reliable hostility colours** — enemy red / ally green driven by the
+  game's own hostility decision, including player housing (ally houses are
+  green, enemy houses red — vanilla got this wrong through the addon api).
+- **Live preview** — a mock frame in the settings window mirrors your
+  colours, bar heights, texture, label format, font size and level font as
+  you change them.
+- **Level font picker** — the level number on the frames can use any of the
+  client's 18 fonts; the picker previews each font in itself.
+- **Info labels (opt-in)** — class, gear score and guild under or around the
+  frame, each with its own X/Y position and font size, plus shadow toggles.
+  Values that cannot be read (NPC gear score, unresolved classes) hide
+  instead of showing junk.
+- **Quality of life** — labels formatted your way (current / percent / both /
+  hidden), housing HP display, bar heights, background opacity, and a Reset
+  button with a 5-second are-you-sure arm.
 
-Heres a quick before and after of simply the default new unitframes
+## Install
 
-![App Screenshot](https://media.discordapp.net/attachments/1271633674336604191/1366551387940327434/beforeafterbetterbars.png?ex=68115ba8&is=68100a28&hm=83e13386fc1379bfa49631de9ed437427ff60bd0b6af5c02901b8fbc3416b78f&=)
+1. Download the release zip and extract it into your `Documents/AAClassic/Addon/`
+   folder, so it sits at `Addon/BetterBars/`.
+2. Enable BetterBars in the in-game addon list.
+3. Type `bb` in chat to open the settings.
+
+Settings save automatically — there is no Save button. Upgrading from 2.0
+performs a one-time reset to the new defaults (your first 3.0 launch only).
+
+## Changelog — 3.0
+
+- Bars rebuilt against the newer client's atlas: exact backdrop ninepart,
+  retail fill sprites for HP and MP, per-bar backdrops, and damage trails
+  tinted from the bar colour instead of flat grey.
+- Housing targets colour correctly (ally green / enemy red) and can show the
+  game's own HP text (LABELS → House HP).
+- Player and pet bars keep the custom colours in every case — including with
+  the fill texture off and after `/reload` with a pet out.
+- Pet frame HP/MP labels are formatted and centred like the main frames.
+- Party frames: the damage trail follows your HP colour (the one element the
+  addon api exposes; full party styling needs api support).
+- Settings window rebuilt: flat sliders and checks, everything saves live,
+  colour wheel picker, live preview frame, level font picker, per-item info
+  label controls, double-confirm Reset.
+- Fixes: the welcome card no longer returns after a Reset or reload, settings
+  no longer reset on login, the fill texture no longer resurrects after being
+  toggled off, and class/gear-score labels hide junk values instead of
+  printing them.
+
+## Credits
+
+By **Dehling**. Free, always. In-game donations appreciated, never expected.

@@ -1,0 +1,15 @@
+# Windows / editor junk
+Thumbs.db
+desktop.ini
+*.swp
+*~
+.vscode/
+.idea/
+
+# Pre-git backups of the addon sources
+.backup/
+*.bak
+
+# Addon runtime output
+*.log
+bbdebug_dump.txt
