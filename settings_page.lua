@@ -2,10 +2,47 @@ local api = require("api")
 local settings = require("BetterBars/settings")
 local default_settings = require("BetterBars/default_settings")
 
+-- UI scale. Same rules as main.lua - see UI_SCALING.md for the full story.
+--
+-- Widget offsets are in UI units and device pixels = UI units * scale, and the
+-- scale is usually neither 1 nor round (the option slider's "80" and "90" apply
+-- 0.85 and 0.93; the default is 0.85 below 1280x864).
+--
+-- This whole window is drawn in the "dark rectangle with a 1-unit inset fill"
+-- idiom, which is a 1px border by construction. At 1.3 that inset is 1.3 device
+-- pixels, so it rasterises to 1 or 2 depending where the widget happens to sit -
+-- borders that look doubled on some controls and not others.
+--
+-- Px(n) fixes a size in device pixels, so a 1px border is 1px at any scale.
+-- Deliberately NOT applied to the chunky decoration (24/30px headers, the 4px
+-- accent stripe, the colour cube's thick inset): those are meant to scale with
+-- the window, and they are wide enough that a fractional edge does not show.
+--
+-- Read at build time. If the player changes UI scale with the window open it
+-- will not re-derive until the window is rebuilt, which is a fair trade for not
+-- recomputing this on every draw.
+local function UIScale()
+    local s
+    pcall(function() s = api.Interface:GetUIScale() end)
+    if type(s) ~= "number" or s <= 0 then return 1 end
+    return s
+end
+
+local function Px(n)
+    return n / UIScale()
+end
+
 -- Single source of the addon version for the credit label; main.lua's
 -- manifest carries the same literal (kept in sync by hand - requiring this
 -- module at parse time caused the every-login reset bug).
-local ADDON_VERSION = "3.0"
+local ADDON_VERSION = "3.1"
+
+-- Aborts the enclosing pcall - the sandbox has no error()/assert(); indexing a
+-- nil is the only deliberate raise available. See BBFail in main.lua.
+local function BBFail()
+    local nothing
+    return nothing.forced_failure
+end
 
 -- Waiting for Aguru to enable castbar in API :)
 -- Hides the Cast bar toggle and its colour control; the feature itself is
@@ -249,8 +286,9 @@ function U.FlatButton(parent, id, text, x, y, w, h, tone, onClick)
     border:AddAnchor("BOTTOMRIGHT", btn, 0, 0)
     border:Show(true)
     local fill = btn:CreateColorDrawable(btnTone[1], btnTone[2], btnTone[3], btnTone[4], "background")
-    fill:AddAnchor("TOPLEFT", btn, 1, 1)
-    fill:AddAnchor("BOTTOMRIGHT", btn, -1, -1)
+    local bp = Px(1)
+    fill:AddAnchor("TOPLEFT", btn, bp, bp)
+    fill:AddAnchor("BOTTOMRIGHT", btn, -bp, -bp)
     fill:Show(true)
     local txt = U.Label(btn, id .. "_txt", text, 1, 2, w - 2, h - 4, 11, white, ALIGN.CENTER)
     txt:Clickable(false)
@@ -275,8 +313,9 @@ function U.ChildFlatButton(parent, id, text, x, y, w, h, tone, onClick, align)
     border:AddAnchor("BOTTOMRIGHT", button, 0, 0)
     border:Show(true)
     local fill = button:CreateColorDrawable(btnTone[1], btnTone[2], btnTone[3], btnTone[4], "background")
-    fill:AddAnchor("TOPLEFT", button, 1, 1)
-    fill:AddAnchor("BOTTOMRIGHT", button, -1, -1)
+    local bp = Px(1)
+    fill:AddAnchor("TOPLEFT", button, bp, bp)
+    fill:AddAnchor("BOTTOMRIGHT", button, -bp, -bp)
     fill:Show(true)
     local textLabel = U.ChildLabel(button, id .. "_text", text, 4, 2, w - 8, h - 4, 11, white, align or ALIGN.LEFT)
     textLabel:Clickable(false)
@@ -414,19 +453,23 @@ function U.SliderRow(panel, id, labelText, y, minV, maxV, value, onChanged, disp
     trackBorder:AddAnchor("TOPLEFT", track, 0, 0)
     trackBorder:AddAnchor("BOTTOMRIGHT", track, 0, 0)
     local trackBg = track:CreateColorDrawable(0.10, 0.10, 0.12, 0.95, "background")
-    trackBg:AddAnchor("TOPLEFT", track, 1, 1)
-    trackBg:AddAnchor("BOTTOMRIGHT", track, -1, -1)
+    local bp = Px(1)
+    trackBg:AddAnchor("TOPLEFT", track, bp, bp)
+    trackBg:AddAnchor("BOTTOMRIGHT", track, -bp, -bp)
     local fill = track:CreateColorDrawable(0, 0.55, 0.55, 0.9, "background")
-    fill:AddAnchor("TOPLEFT", track, 1, 1)
+    fill:AddAnchor("TOPLEFT", track, bp, bp)
 
     local function refreshFill()
         local frac = (cur - minV) / (maxV - minV)
-        local w = math.floor(frac * (SLIDER_TRACK_W - 2) + 0.5)
+        -- The track's border is bp thick on each side, so the fill area is the
+        -- track less 2*bp - not less 2, which over-filled by a fraction of a
+        -- pixel at either end whenever the scale was not 1.
+        local w = math.floor(frac * (SLIDER_TRACK_W - 2 * bp) + 0.5)
         if w < 1 then
             fill:SetVisible(false)
         else
             fill:SetVisible(true)
-            fill:SetExtent(w, SLIDER_TRACK_H - 2)
+            fill:SetExtent(w, SLIDER_TRACK_H - 2 * bp)
         end
     end
     refreshFill()
@@ -461,12 +504,16 @@ function U.FlatCheck(panel, id, labelText, x, y, w, isOn, onToggle)
     btn:SetExtent(w, 20)
     btn:AddAnchor("TOPLEFT", panel, x, y)
     btn:SetText("")
+    -- The ring is the 14 box minus the 12 fill, i.e. 1 unit on each side. That
+    -- has to be 1 DEVICE pixel per side or the check reads with a doubled edge
+    -- at some scales, so the fill is sized off the box rather than hardcoded.
+    local bp = Px(1)
     local border = btn:CreateColorDrawable(0, 0, 0, 0.92, "overlay")
     border:SetExtent(14, 14)
     border:AddAnchor("RIGHT", btn, 0, 0)
     local fill = btn:CreateColorDrawable(0.14, 0.14, 0.16, 1, "overlay")
-    fill:SetExtent(12, 12)
-    fill:AddAnchor("RIGHT", btn, -1, 0)
+    fill:SetExtent(14 - 2 * bp, 14 - 2 * bp)
+    fill:AddAnchor("RIGHT", btn, -bp, 0)
     local lbl = U.ChildLabel(btn, id .. "_lbl", labelText, 0, 2, w - 22, 16, 13, C.gold, ALIGN.LEFT)
     lbl:Clickable(false)
     local function refresh()
@@ -485,6 +532,12 @@ end
 -- LIVE PREVIEW BARS (built inside the COLORS panel)
 -- =============================================
 local BB_TEX_DIR = "../Addon/BetterBars/textures/"
+-- Mirrors BAR_BG_OUTSET in main.lua: the fill spans the whole bar and the
+-- backdrop cell is drawn this far outside it, so the border ring sits around
+-- the fill rather than under it.
+local PREV_BG_OUTSET = 2
+-- Mirrors MP_BAR_GAP in main.lua (which is tied to BAR_BG_OUTSET there)
+local PREV_MP_GAP = PREV_BG_OUTSET
 local previewRefs = nil
 
 -- Mock values the preview renders with
@@ -504,32 +557,33 @@ local function buildPreviewBar(panel, idSuffix, x, y, w, h, texName, texW, texH)
         local d = bar:CreateNinePartDrawable(TEXTURE_PATH.HUD, "background")
         pcall(function() d:SetSRGB(false) end)
         local loaded = d:SetTgaTexture(BB_TEX_DIR .. "bar_frame.png")
-        if loaded == false then error("png did not load") end
+        if loaded == false then BBFail() end
         d:SetCoords(0, 0, 17, 17)
         d:SetInset(8, 8, 8, 8)
-        d:AddAnchor("TOPLEFT", bar, 0, 0)
-        d:AddAnchor("BOTTOMRIGHT", bar, 0, 0)
+        d:AddAnchor("TOPLEFT", bar, -Px(PREV_BG_OUTSET), -Px(PREV_BG_OUTSET))
+        d:AddAnchor("BOTTOMRIGHT", bar, Px(PREV_BG_OUTSET), Px(PREV_BG_OUTSET))
         nineD = d
     end)
     if not okNine then
         flatD = bar:CreateColorDrawable(0, 0, 0, 0.55, "background")
-        flatD:AddAnchor("TOPLEFT", bar, 0, 0)
-        flatD:AddAnchor("BOTTOMRIGHT", bar, 0, 0)
+        flatD:AddAnchor("TOPLEFT", bar, -Px(PREV_BG_OUTSET), -Px(PREV_BG_OUTSET))
+        flatD:AddAnchor("BOTTOMRIGHT", bar, Px(PREV_BG_OUTSET), Px(PREV_BG_OUTSET))
     end
 
-    -- Trail behind, fill on top (later-created drawables render above)
+    -- Trail behind, fill on top (later-created drawables render above).
+    -- Both start flush at the bar's own top-left: the fill fills the bar.
     local trail = bar:CreateColorDrawable(0.1, 0.1, 0.1, 1, "background")
-    trail:AddAnchor("TOPLEFT", bar, 2, 2)
+    trail:AddAnchor("TOPLEFT", bar, 0, 0)
     local fillFlat = bar:CreateColorDrawable(0.5, 0.5, 0.5, 1, "background")
-    fillFlat:AddAnchor("TOPLEFT", bar, 2, 2)
+    fillFlat:AddAnchor("TOPLEFT", bar, 0, 0)
     local fillTex
     pcall(function()
         fillTex = bar:CreateImageDrawable("Textures/Defaults/White.dds", "background")
         pcall(function() fillTex:SetSRGB(false) end)
         local loaded = fillTex:SetTgaTexture(BB_TEX_DIR .. texName .. ".png")
-        if loaded == false then error("png did not load") end
+        if loaded == false then BBFail() end
         fillTex:SetCoords(0, 0, texW, texH)
-        fillTex:AddAnchor("TOPLEFT", bar, 2, 2)
+        fillTex:AddAnchor("TOPLEFT", bar, 0, 0)
     end)
     local lbl = U.ChildLabel(bar, "bbPrev" .. idSuffix .. "_lbl", "", 0, 0, w, 14, 11, C.white, ALIGN.CENTER)
     lbl:RemoveAllAnchors()
@@ -554,20 +608,18 @@ local function updatePreview()
         local fontSize = s2.labelFontSize or 11
         local hpH = (s2.barHeight and s2.barHeight.hp) or 17
         local mpH = (s2.barHeight and s2.barHeight.mp) or 13
-        -- Exactly ApplyCommonStyle's barDy: -1 leaves one clear row between
-        -- the two bar borders, -2 sits them directly against each other
-        -- (the border ring lives 1px inside each box).
-        local gap = (s2.showBarSeparation == true) and -1 or -2
+        -- Mirrors MP_BAR_GAP in main.lua: the MP bar is seated this far below
+        -- the HP bar so the two outset backdrops meet on adjacent border rows.
+        local gap = Px(PREV_MP_GAP)
         -- While the popup edits the enemy colour, the HP preview wears it so
         -- the change is visible live.
         local hpKey = (colorPopup and colorPopup:IsVisible() and colorPopupTarget == "ehp")
             and "ehp" or "hp"
 
-        -- Re-apply geometry. The height setting is the FILL height, exactly
-        -- as ApplyBarBox treats it: the bar box adds the 2px inset on each
-        -- side. Treating it as the box height rendered the preview 4px thin.
-        local hpBox = hpH + 4
-        local mpBox = mpH + 4
+        -- Re-apply geometry. The height setting IS the bar height now, exactly
+        -- as ApplyBarBox applies it - no inset to add back.
+        local hpBox = hpH
+        local mpBox = mpH
         previewRefs.hp.h = hpBox
         previewRefs.mp.h = mpBox
         previewRefs.hp.bar:SetExtent(previewRefs.hp.w, hpBox)
@@ -601,15 +653,16 @@ local function updatePreview()
             elseif refs.flatBg then
                 refs.flatBg:SetColor(0, 0, 0, 0.55 * bgK)
             end
-            local fh = refs.h - 4
-            local innerW = refs.w - 4
+            -- The fill spans the whole bar; the backdrop is outset around it.
+            local fh = refs.h
+            local innerW = refs.w
             local fw = math.floor(innerW * pctFill / 100 + 0.5)
             -- damage trail: 15% of the bar behind the fill edge, at the same
             -- 0.43 luminance main.lua paints real trails with
             local tw = math.floor(innerW * 0.15 + 0.5)
             if fw + tw > innerW then tw = innerW - fw end
             refs.trail:RemoveAllAnchors()
-            refs.trail:AddAnchor("TOPLEFT", refs.bar, 2 + fw, 2)
+            refs.trail:AddAnchor("TOPLEFT", refs.bar, fw, 0)
             refs.trail:SetExtent(tw, fh)
             refs.trail:SetColor(r * 0.43, g * 0.43, b * 0.43, 1)
             refs.trail:SetVisible(tw > 0)
@@ -699,14 +752,14 @@ local function buildColorPopup()
     U.AddBg(colorPopup, 0, 0, 0, 0.96)
 
     local body = colorPopup:CreateColorDrawable(C.dark[1], C.dark[2], C.dark[3], C.dark[4], "background")
-    body:AddAnchor("TOPLEFT", colorPopup, 1, 1)
-    body:AddAnchor("BOTTOMRIGHT", colorPopup, -1, -1)
+    body:AddAnchor("TOPLEFT", colorPopup, Px(1), Px(1))
+    body:AddAnchor("BOTTOMRIGHT", colorPopup, -Px(1), -Px(1))
     local header = colorPopup:CreateColorDrawable(C.header[1], C.header[2], C.header[3], C.header[4], "background")
-    header:SetExtent(W - 2, 30)
-    header:AddAnchor("TOPLEFT", colorPopup, 1, 1)
+    header:SetExtent(W - 2 * Px(1), 30)
+    header:AddAnchor("TOPLEFT", colorPopup, Px(1), Px(1))
     local accent = colorPopup:CreateColorDrawable(C.accent[1], C.accent[2], C.accent[3], 0.85, "background")
     accent:SetExtent(4, 30)
-    accent:AddAnchor("TOPLEFT", colorPopup, 1, 1)
+    accent:AddAnchor("TOPLEFT", colorPopup, Px(1), Px(1))
     popupTitleLbl = U.Label(colorPopup, "bbPopupTitle", "COLOR", 16, 7, 200, 16, 13, C.gold, ALIGN.LEFT)
 
     U.FlatButton(colorPopup, "bbPopupClose", "X", W - 32, 5, 22, 22, C.button, function()
@@ -726,7 +779,7 @@ local function buildColorPopup()
         local d = wheelBtn:CreateImageDrawable("Textures/Defaults/White.dds", "background")
         pcall(function() d:SetSRGB(false) end)
         local loaded = d:SetTgaTexture(BB_TEX_DIR .. "colorwheel.png")
-        if loaded == false then error("wheel png did not load") end
+        if loaded == false then BBFail() end
         d:SetCoords(0, 0, WHEEL_SIZE, WHEEL_SIZE)
         d:AddAnchor("TOPLEFT", wheelBtn, 0, 0)
         d:AddAnchor("BOTTOMRIGHT", wheelBtn, 0, 0)
@@ -734,19 +787,44 @@ local function buildColorPopup()
     if not wheelOk then
         api.Log:Err("BetterBars: colorwheel.png missing - wheel disabled, presets still work")
     end
+    -- Hit-test entirely in DEVICE pixels.
+    --
+    -- This used to divide the mouse position by the UI scale and then compare it
+    -- against GetEffectiveOffset and a radius derived from WHEEL_SIZE - three
+    -- different coordinate spaces in five lines. At 100% they all coincide, so
+    -- it worked; at any other scale the mouse was shrunk while the widget offset
+    -- was not, dist came out far too large, and "if dist > R then return"
+    -- silently swallowed the click. The wheel looked dead while the presets, RGB
+    -- entry and Default button carried on working.
+    --
+    -- The client's own spectrum picker settles the units
+    -- (x2ui/customizing_new/components.lua:300-308): it compares GetMousePos
+    -- against GetEffectiveOffset and GetEffectiveExtent with no scale division
+    -- anywhere. "Effective" means after scaling - the same space the mouse is
+    -- reported in. So: take the radius from the widget's effective extent rather
+    -- than from the design constant, and convert nothing.
     wheelBtn:SetHandler("OnClick", function(self)
         local ok = pcall(function()
             local mx, my = api.Input:GetMousePos()
-            local scale = api.Interface:GetUIScale()
-            if scale and scale > 0 then mx, my = mx / scale, my / scale end
             local wx, wy = self:GetEffectiveOffset()
-            local R = WHEEL_SIZE / 2
-            local dx = (mx - wx) - R
-            local dy = (my - wy) - R
+            -- GetEffectiveExtent is what the client uses, but it is not
+            -- guaranteed on an addon widget; the design size scaled up is the
+            -- same number when it is missing.
+            local ew, eh
+            pcall(function() ew, eh = self:GetEffectiveExtent() end)
+            if type(ew) ~= "number" or ew <= 0 then
+                ew = WHEEL_SIZE * UIScale()
+                eh = ew
+            end
+            if type(eh) ~= "number" or eh <= 0 then eh = ew end
+            local rx, ry = ew / 2, eh / 2
+            local dx = (mx - wx) - rx
+            local dy = (my - wy) - ry
             local dist = math.sqrt(dx * dx + dy * dy)
-            if dist > R then return end
+            if dist > rx then return end
             popupState.h = math.deg(math.atan2(dy, dx)) % 360
-            popupState.s = math.min(1, dist / (R - 2))
+            -- 2px short of the edge so the rim still reaches full saturation
+            popupState.s = math.min(1, dist / (rx - 2))
             popupApplyHSV()
         end)
         if not ok then
@@ -814,8 +892,8 @@ local function buildColorPopup()
         sqBorder:AddAnchor("BOTTOMRIGHT", square, 0, 0)
         local sqFill = square:CreateColorDrawable(
             colorData.r / 255, colorData.g / 255, colorData.b / 255, 1, "background")
-        sqFill:AddAnchor("TOPLEFT", square, 1, 1)
-        sqFill:AddAnchor("BOTTOMRIGHT", square, -1, -1)
+        sqFill:AddAnchor("TOPLEFT", square, Px(1), Px(1))
+        sqFill:AddAnchor("BOTTOMRIGHT", square, -Px(1), -Px(1))
         square:SetHandler("OnClick", function()
             popupSetRGB(colorData.r, colorData.g, colorData.b)
         end)
@@ -895,14 +973,14 @@ local function buildFontPopup()
     fontPopup:SetExtent(W, H)
     U.AddBg(fontPopup, 0, 0, 0, 0.96)
     local body = fontPopup:CreateColorDrawable(C.dark[1], C.dark[2], C.dark[3], C.dark[4], "background")
-    body:AddAnchor("TOPLEFT", fontPopup, 1, 1)
-    body:AddAnchor("BOTTOMRIGHT", fontPopup, -1, -1)
+    body:AddAnchor("TOPLEFT", fontPopup, Px(1), Px(1))
+    body:AddAnchor("BOTTOMRIGHT", fontPopup, -Px(1), -Px(1))
     local header = fontPopup:CreateColorDrawable(C.header[1], C.header[2], C.header[3], C.header[4], "background")
-    header:SetExtent(W - 2, 30)
-    header:AddAnchor("TOPLEFT", fontPopup, 1, 1)
+    header:SetExtent(W - 2 * Px(1), 30)
+    header:AddAnchor("TOPLEFT", fontPopup, Px(1), Px(1))
     local accent = fontPopup:CreateColorDrawable(C.accent[1], C.accent[2], C.accent[3], 0.85, "background")
     accent:SetExtent(4, 30)
-    accent:AddAnchor("TOPLEFT", fontPopup, 1, 1)
+    accent:AddAnchor("TOPLEFT", fontPopup, Px(1), Px(1))
     U.Label(fontPopup, "bbFontTitle", "LEVEL FONT", 16, 7, 160, 16, 13, C.gold, ALIGN.LEFT)
     U.FlatButton(fontPopup, "bbFontClose", "X", W - 32, 5, 22, 22, C.button, hideFontPopup)
 
@@ -984,18 +1062,18 @@ local function showInfoCard()
     U.AddBg(infoCardWindow, 0, 0, 0, 0.96)
 
     local body = infoCardWindow:CreateColorDrawable(C.dark[1], C.dark[2], C.dark[3], C.dark[4], "background")
-    body:AddAnchor("TOPLEFT", infoCardWindow, 1, 1)
-    body:AddAnchor("BOTTOMRIGHT", infoCardWindow, -1, -1)
+    body:AddAnchor("TOPLEFT", infoCardWindow, Px(1), Px(1))
+    body:AddAnchor("BOTTOMRIGHT", infoCardWindow, -Px(1), -Px(1))
     body:Show(true)
 
     local header = infoCardWindow:CreateColorDrawable(C.header[1], C.header[2], C.header[3], C.header[4], "background")
-    header:SetExtent(width - 2, 30)
-    header:AddAnchor("TOPLEFT", infoCardWindow, 1, 1)
+    header:SetExtent(width - 2 * Px(1), 30)
+    header:AddAnchor("TOPLEFT", infoCardWindow, Px(1), Px(1))
     header:Show(true)
 
     local accent = infoCardWindow:CreateColorDrawable(C.accent[1], C.accent[2], C.accent[3], C.accent[4], "background")
     accent:SetExtent(4, 30)
-    accent:AddAnchor("TOPLEFT", infoCardWindow, 1, 1)
+    accent:AddAnchor("TOPLEFT", infoCardWindow, Px(1), Px(1))
     accent:Show(true)
 
     U.Label(infoCardWindow, "bbInfoTitle", "BetterBars", 16, 7, 220, 16, 15, C.gold, ALIGN.LEFT)
@@ -1064,14 +1142,14 @@ local function initializeSettingsPage()
     U.AddBg(settingsWindow, 0, 0, 0, 0.96)
     
     local body = settingsWindow:CreateColorDrawable(C.dark[1], C.dark[2], C.dark[3], C.dark[4], "background")
-    body:AddAnchor("TOPLEFT", settingsWindow, 1, 1)
-    body:AddAnchor("BOTTOMRIGHT", settingsWindow, -1, -1)
+    body:AddAnchor("TOPLEFT", settingsWindow, Px(1), Px(1))
+    body:AddAnchor("BOTTOMRIGHT", settingsWindow, -Px(1), -Px(1))
     body:Show(true)
     
     -- Header bar
     local header = settingsWindow:CreateColorDrawable(C.header[1], C.header[2], C.header[3], C.header[4], "background")
-    header:SetExtent(width - 2, 34)
-    header:AddAnchor("TOPLEFT", settingsWindow, 1, 1)
+    header:SetExtent(width - 2 * Px(1), 34)
+    header:AddAnchor("TOPLEFT", settingsWindow, Px(1), Px(1))
     header:Show(true)
     
     -- Title
@@ -1142,8 +1220,11 @@ local function initializeSettingsPage()
     -- =============================================
     -- SECTION: BARS — geometry sliders + toggles
     -- =============================================
-    local barP = createSectionPanel(settingsWindow, "barPanel", 18, y, 384, 144, "BARS")
-    y = y + 152
+    -- 172 rather than 144: the abyssal size slider sits on its own row below
+    -- the toggle row. Everything after this is stacked off y, and the window's
+    -- height is computed from y at the end, so the panel simply grows.
+    local barP = createSectionPanel(settingsWindow, "barPanel", 18, y, 384, 172, "BARS")
+    y = y + 180
 
     local hpSlider = U.SliderRow(barP, "bbHpH", "HP height", 32, 5, 50,
         (s.barHeight and s.barHeight.hp) or 17, function(v)
@@ -1172,9 +1253,8 @@ local function initializeSettingsPage()
 
     -- Bottom row. "Retail fill" replaces the old texture cycle - ON is the
     -- retail sprite, OFF the vanilla flat fill; other texture names still
-    -- work if set by hand in settings. The bar-gap toggle is retired from
-    -- the UI (the merged-border reference look stays the default; the
-    -- showBarSeparation setting still works if hand-edited).
+    -- work if set by hand in settings. There is no bar-gap control: the MP bar
+    -- keeps AAC's own anchoring, so showBarSeparation is inert.
     local fillCheck = U.FlatCheck(barP, "bbFillCheck", "Texture", 14, 114, 76,
         function() return (settings.getSettings().barTexture or "none") ~= "none" end,
         function()
@@ -1187,6 +1267,29 @@ local function initializeSettingsPage()
     -- Level number font picker
     U.ChildFlatButton(barP, "bbFontBtn", "Font", 152, 112, 96, 22, C.blue,
         openFontPopup, ALIGN.CENTER)
+    -- Abyssal charge bar. Restyles the client's bubble action bar in place, so
+    -- OFF simply hands its own bubble art back rather than hiding the bar.
+    -- Opt-in, so the test is for an explicit true rather than "anything but
+    -- false": a settings table read before the merge fills it in carries no
+    -- key at all, and the old idiom read that absence as ON.
+    local abyssCheck = U.FlatCheck(barP, "bbAbyssCheck", "Abyssal", 290, 114, 82,
+        function() return settings.getSettings().showAbyssal == true end,
+        function()
+            local s2 = settings.getSettings()
+            settings.updateSetting("showAbyssal", s2.showAbyssal ~= true)
+            settings.saveSettings()
+        end)
+    -- Abyssal pip diameter. Runs past the client's 49px cell up to 69: our
+    -- spacing follows pip size, so oversized pips overhang the invisible
+    -- slots without colliding with each other
+    -- (bubble_action_bar_view.lua:2-3) - the slots are spaced by it, so a wider
+    -- pip would run into its neighbour. abyssal.lua clamps to the live cell
+    -- height as well, in case a future client sizes them differently.
+    local abyssSizeSlider = U.SliderRow(barP, "bbAbyssSize", "Abyss size", 142, 8, 69,
+        s.abyssalSize or 35, function(v)
+            settings.updateSetting("abyssalSize", v)
+            settings.saveSettings()
+        end)
     -- Assigned after the COLORS section builds; hides the Cast colour
     -- control while the cast bar itself is off.
     local syncCastColorUI
@@ -1207,26 +1310,31 @@ local function initializeSettingsPage()
     -- =============================================
     -- Panel height follows the bar heights at build time so the preview fits;
     -- resizing the sliders afterwards may spill slightly until reopened.
-    -- Heights are FILL heights (ApplyBarBox semantics); each box adds 4.
+    -- Heights ARE the bar heights (ApplyBarBox applies them straight through).
     local pvHpH = (s.barHeight and s.barHeight.hp) or 17
     local pvMpH = (s.barHeight and s.barHeight.mp) or 13
     local colorPH = 70 + math.max(38, pvHpH + pvMpH + 8) + 12
     local colorP = createSectionPanel(settingsWindow, "colorPanel", 18, y, 384, colorPH, "COLORS")
     y = y + colorPH + 8
 
-    -- Three cubes, centered across the panel
-    U.ChildLabel(colorP, "hpColorLabel", "HP", 40, 39, 22, 14, 13, C.gold, ALIGN.LEFT)
-    local hpCube = U.ColorCube(colorP, "hpColorCube", 64, 34, "hp", function()
+    -- Three groups centred across the 384 panel (back from the four-across
+    -- squeeze the Abyss cube needed): 30px margins, 76px between groups, each
+    -- group a label then its cube.
+    U.ChildLabel(colorP, "hpColorLabel", "HP", 30, 39, 22, 14, 13, C.gold, ALIGN.LEFT)
+    local hpCube = U.ColorCube(colorP, "hpColorCube", 54, 34, "hp", function()
         openColorPopup("hp", "HP")
     end, 24)
-    U.ChildLabel(colorP, "mpColorLabel", "MP", 140, 39, 24, 14, 13, C.gold, ALIGN.LEFT)
-    local mpCube = U.ColorCube(colorP, "mpColorCube", 166, 34, "mp", function()
+    U.ChildLabel(colorP, "mpColorLabel", "MP", 154, 39, 24, 14, 13, C.gold, ALIGN.LEFT)
+    local mpCube = U.ColorCube(colorP, "mpColorCube", 180, 34, "mp", function()
         openColorPopup("mp", "MP")
     end, 24)
-    U.ChildLabel(colorP, "ehpColorLabel", "Enemy", 240, 39, 46, 14, 13, C.gold, ALIGN.LEFT)
-    local ehpCube = U.ColorCube(colorP, "ehpColorCube", 290, 34, "ehp", function()
+    U.ChildLabel(colorP, "ehpColorLabel", "Enemy", 280, 39, 46, 14, 13, C.gold, ALIGN.LEFT)
+    local ehpCube = U.ColorCube(colorP, "ehpColorCube", 330, 34, "ehp", function()
         openColorPopup("ehp", "Enemy")
     end, 24)
+    -- No Abyss cube since 3.1: the charge pips are plain authored artwork and
+    -- carry their own colour (see abyssal.lua). A pre-3.1 session may have
+    -- created the old cube widgets on this window; they are simply not rebuilt.
     wndColorCubes = { hp = hpCube, mp = mpCube, ehp = ehpCube }
 
     if CAST_BAR_ENABLED then
@@ -1254,14 +1362,14 @@ local function initializeSettingsPage()
 
     -- Live preview: fake HP + MP bars painted from colorValues and the
     -- current settings. updatePreview() re-applies colours, fill, format,
-    -- font size, bar heights and the gap on every change. While the popup
-    -- edits the enemy colour, the HP bar wears it - no extra toggle needed.
+    -- font size and bar heights on every change. While the popup edits the
+    -- enemy colour, the HP bar wears it - no extra toggle needed.
     previewRefs = {
         panel = colorP,
         x = 40,
         y = 70,
-        hp = buildPreviewBar(colorP, "HP", 40, 70, 304, pvHpH + 4, "bar_retail", 300, 17),
-        mp = buildPreviewBar(colorP, "MP", 40, 70 + pvHpH + 2, 304, pvMpH + 4, "bar_retail_mp", 300, 13),
+        hp = buildPreviewBar(colorP, "HP", 40, 70, 300, pvHpH, "bar_retail", 300, 17),
+        mp = buildPreviewBar(colorP, "MP", 40, 70 + pvHpH + Px(PREV_MP_GAP), 300, pvMpH, "bar_retail_mp", 300, 13),
     }
     -- Mock level digit left of the bars; follows the Font pick live
     previewRefs.levelLbl = U.ChildLabel(colorP, "bbPrevLevel", "47", 4, 74, 34, 26, 22, C.gold, ALIGN.CENTER)
@@ -1429,7 +1537,9 @@ local function initializeSettingsPage()
         local io2 = (s2.infoOffsets and s2.infoOffsets[curInfoItem]) or {}
         sizeSlider.SetValue(io2.size or 12)
         fmtBtn:SetCleanText(fmtLabels[s2.labelFormat or "both"] or "Both")
+        abyssSizeSlider.SetValue(s2.abyssalSize or 35)
         fillCheck.Refresh()
+        abyssCheck.Refresh()
         if castCheck then castCheck.Refresh() end
         if syncCastColorUI then syncCastColorUI() end
         houseCheck.Refresh()

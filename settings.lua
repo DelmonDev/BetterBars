@@ -45,6 +45,39 @@ local function mergeSettings(saved)
     end
 
 
+    -- colors.abyssal is GONE as of 3.1 - the pips are plain authored artwork
+    -- and nothing reads a tint any more. This migration stays to scrub the key
+    -- out of old saves (it shipped as violet in the drawn-disc era, then white
+    -- in the tint era); with "abyssal" removed from the merge list below,
+    -- nothing refills it and saves come out clean.
+    if not saved.bbAbyssalArt then
+        saved.bbAbyssalArt = true
+        if saved.colors and saved.colors.abyssal ~= nil then
+            saved.colors.abyssal = nil
+            needsPostResetSave = true
+        end
+    end
+
+    -- The five generated fill styles (flat, gloss, sheen, striped, tube) are
+    -- gone as of 3.1 - the extracted retail sprite is the only fill that ships.
+    -- A save still naming one of them would point the drawable at a PNG that no
+    -- longer exists, so the key is dropped and the merge below refills it from
+    -- the defaults. "none" and any file the player put in textures/ themselves
+    -- are left alone; only the names this addon deleted are rewritten. Guarded
+    -- by its own marker like the migrations above, so a later hand-set value is
+    -- never second-guessed.
+    if not saved.bbFillRetailOnly then
+        saved.bbFillRetailOnly = true
+        local gone = {
+            bar_flat = true, bar_gloss = true, bar_sheen = true,
+            bar_striped = true, bar_tube = true,
+        }
+        if saved.barTexture and gone[saved.barTexture] then
+            saved.barTexture = nil
+            needsPostResetSave = true
+        end
+    end
+
     -- Colors. Copied field by field rather than assigned: handing out the
     -- default table itself made the live settings and the defaults the same
     -- object, so anything editing a colour in place would have destroyed the
@@ -80,6 +113,32 @@ local function mergeSettings(saved)
             v = v / 0.6
             if v > 1.1 then v = 1.1 end
             saved.backgroundOpacity = v
+        end
+    end
+
+    -- barHeight changed meaning, so saved values have to be re-based.
+    --
+    -- It used to be the FILL height, with the wrapper drawn 4px larger to leave
+    -- room for a border inset inside it. The bar is vanilla geometry now - the
+    -- setting IS the wrapper height, applied straight to SetHeight, and the
+    -- border is drawn outside the bar instead. A save carrying the old 17 would
+    -- render a 17px wrapper where it used to produce 21, and 2px under AAC's
+    -- native 19.
+    --
+    -- Dropping the key lets the merge below refill it from the new defaults
+    -- (19/13, the client's own heights). Guarded by its own marker like the
+    -- migrations above, so it runs exactly once and the player is free to
+    -- re-tune afterwards.
+    -- Only flags a save when there was actually something to drop. The
+    -- parse-time read can hand back a detached empty table, and marking that
+    -- dirty would write the marker to a table nothing keeps - after which the
+    -- real load would re-run the migration and wipe a height the player had
+    -- since set.
+    if not saved.bbHeightsVanilla then
+        saved.bbHeightsVanilla = true
+        if saved.barHeight ~= nil then
+            saved.barHeight = nil
+            needsPostResetSave = true
         end
     end
 

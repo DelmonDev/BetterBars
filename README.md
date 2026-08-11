@@ -12,6 +12,38 @@ Vanilla frames on top, BetterBars underneath:
 
 ![BetterBars settings window](https://github.com/user-attachments/assets/ecb0c7f9-f81d-446c-b86e-183886a588e0)
 
+## What's new in 3.1
+
+- **Vanilla anchoring** — the bars sit exactly where the client puts them, so
+  the name, level, buffs and frame furniture line up the way vanilla intends;
+  3.0's styling is untouched, its re-anchoring machinery is gone.
+- **Correct UI scaling** — borders, gaps and offsets are computed against the
+  real UI scale (the option slider's "80" applies 0.85, "90" applies 0.93),
+  so everything stays crisp at any scale instead of only at 100%.
+- **Abyssal charge bar (opt-in)** — the client's own charge display restyled
+  in place: lightning-medallion pips, lit and unlit, with a size slider
+  (8–69), spacing that follows pip size, and exact whole-charge display. Off
+  by default — it is the one thing here that is not a unit frame, so you turn
+  it on yourself under BARS → Abyssal, and turning it back off hands the
+  vanilla bubbles straight back. The pips are finished artwork rather than a
+  tinted shape, so the Abyss colour option is gone; old saves are cleaned up
+  on first launch.
+- **Colour fixes** — "not my target" enemies use the deeper preemptive-strike
+  red the newer client uses; Bloodlust no longer turns your own bar red;
+  pet frame heights corrected.
+- **Info tags** — class / gear score / guild labels are target-frame only and
+  click-through.
+- **Settings window** — the colour wheel hit-tests correctly at every UI
+  scale, its hairline borders stay one pixel everywhere, and the HP / MP /
+  Enemy swatches sit evenly across the panel.
+- **ESC menu integration** — registers with the ESCMenu addon when installed
+  (settings row in its menu); the Addon Options panel remains for everyone
+  else.
+- **One fill texture** — the five generated bar gradients that predated the
+  extracted retail sprite are gone; Texture now means the client's own sprite,
+  on or off. A save naming one of the old ones falls back to the retail
+  sprite by itself.
+
 ## Features
 
 - **Retail-style bars** — the newer client's exact backdrop cell (border,

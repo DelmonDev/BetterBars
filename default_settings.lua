@@ -29,16 +29,30 @@ local default_settings = {
             g = 180,
             b = 60,
             a = 1
-        }
+        },
+        -- No abyssal colour since 3.1: the charge pips are plain authored
+        -- artwork. The settings.lua migration still nils the key out of old
+        -- saves, and nothing reads or refills it any more.
     },
     -- Label format: "both" (current + percent), "current", "percent", "hide"
     labelFormat = "both",
     -- Label font size
     labelFontSize = 11,
-    -- Bar dimensions
-    -- The newer client's fill areas measure exactly 300x17 (HP) and 300x13 (MP)
-    -- in its gauge atlas, so these match it. The old mp default of 15 made the
-    -- mana bar noticeably chunkier than retail's.
+    -- Bar dimensions.
+    --
+    -- These are BAR heights, applied straight through with SetHeight, and the
+    -- fill spans the whole bar - so the height is also the fill height.
+    --
+    -- 17 and 13 are the reference's own fill rects, which is exactly what the
+    -- shipped sprites measure (bar_retail.png is 300x17, bar_retail_mp.png is
+    -- 300x13). At these sizes ApplyFillTexture's SetCoords(0,0,300,17) maps one
+    -- source pixel to one screen pixel, so the sprite's bright top and bottom
+    -- lips stay sharp instead of being blurred through a resample.
+    --
+    -- Note this is 2px under AAC's native HP bar of 19. With the backdrop
+    -- outset by 2 the whole visual box is 21, so it reads 1px proud of the
+    -- native slot top and bottom. Set hp = 15 instead if matching the frame
+    -- art's 19px slot matters more than sprite-exact proportions.
     barHeight = {
         hp = 17,
         mp = 13,
@@ -49,10 +63,11 @@ local default_settings = {
     -- reference does over its own frame art.
     backgroundOpacity = 1.1,
 
-    -- Custom fill texture drawn over the bar colour. The PNGs live in
-    -- BetterBars/textures/ and are greyscale, so the bar colour tints them:
-    -- the texture supplies shading, the colour setting supplies the hue.
-    -- "none" leaves the vanilla flat fill.
+    -- Custom fill texture drawn over the bar colour: the extracted retail
+    -- sprite pair (bar_retail / bar_retail_mp) in BetterBars/textures/. They
+    -- are greyscale, so the bar colour tints them - the texture supplies the
+    -- shading, the colour setting supplies the hue. "none" leaves the vanilla
+    -- flat fill.
     barTexture = "bar_retail",
     -- Font for the level number on the frames (client font path). The
     -- vanilla ornate one is ui/font/sd_leeyagil.ttf.
@@ -65,9 +80,22 @@ local default_settings = {
     -- Show the HP number on housing targets. The addon api cannot read house
     -- health, so the text shown is the game's own label; off keeps it blank.
     showHousingHP = true,
-    -- false is the reference geometry: each bar carries its own border and the
-    -- two sit directly against each other, which IS the separation. true leaves
-    -- one clear row between them instead - a preference, not the reference look.
+    -- Restyle the abyssal charge bar (the client's bubble action bar). Off
+    -- restores the client's own bubble art. The bar only exists at all for
+    -- classes with the high-ability feature set, so this is a no-op otherwise.
+    -- Opt-in: this replaces artwork the player did not ask us to touch, and it
+    -- is the one part of the addon that is not a unit frame, so an install
+    -- looks like vanilla-plus-frames until it is switched on deliberately.
+    showAbyssal = false,
+    -- Pip diameter, in the same units as the client's cell (49x49 with a 2px
+    -- gap, bubble_action_bar_view.lua:1-4). The slider runs 8-69: past 49 the
+    -- pips overhang the invisible slots, which is safe because spacing follows
+    -- pip size rather than the client's pitch. 35 is the original hand-picked
+    -- size, which sat 7 in from each side.
+    abyssalSize = 35,
+    -- INERT. The MP bar is no longer re-anchored at all - it stays where AAC
+    -- puts it, like every other part of the frame. Kept so existing saves that
+    -- carry the key merge cleanly; nothing reads it.
     showBarSeparation = false,
     
     -- Info labels (class, GS, guild) - off by default, opt-in; the tuned

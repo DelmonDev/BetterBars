@@ -6,7 +6,7 @@ local BetterBars = {
   -- is ready - api.GetSettings then hands back a detached empty table, the
   -- whole session runs on defaults (welcome card included), and the first
   -- save overwrites the player's real file. That was the every-login reset.
-  version = "3.0",
+  version = "3.1",
   author = "Dehling",
   desc = "Improves the look of vanilla unit frames"
 }
@@ -28,6 +28,17 @@ local BetterBars = {
 -- and, unlike copying the palette outright, still works for any colour the user
 -- picks in the settings window.
 local AFTERIMAGE_TRAIL_LUMA = 0.43
+
+-- Aborts the enclosing pcall. The addon sandbox provides neither error() nor
+-- assert(), so indexing a nil is the only way addon code can raise on purpose.
+-- The old code called error() directly, which "worked" only because calling
+-- the nil global ALSO throws - the texture fallback paths were riding on an
+-- accident. Same behaviour, now by intent.
+local function BBFail()
+    local nothing
+    return nothing.forced_failure
+end
+
 local LARGE_BAR_COORDS = { 0, 120, 300, 19 }
 local SMALL_BAR_COORDS = { 301, 120, 150, 19 }
 
@@ -51,6 +62,17 @@ local HP_STYLE_KEYS = {
     L_HP_FRIENDLY = "friendly", S_HP_FRIENDLY = "friendly",
     L_HP_HOSTILE  = "hostile",  S_HP_HOSTILE  = "hostile",
     L_HP_NEUTRAL  = "neutral",  S_HP_NEUTRAL  = "neutral",
+    -- "Preemptive strike": the unit was first hit by someone who is not you or
+    -- your team, so the kill and its loot are not yours. The client swaps to
+    -- these styles for it (unitframe.lua:86-94, gated on
+    -- X2Unit:IsFirstHitByMeOrMyTeam("target") returning false while in combat)
+    -- and draws them from a separate atlas row - y=100, against hostile's y=40.
+    --
+    -- Without them here the style carries no bbKey, so the recolour hook
+    -- ignores it and UpdateFrameStyles then paints plain enemy red over the
+    -- top: the distinction the client is trying to show is erased.
+    L_HP_PREEMTIVE_STRIKE = "preemptive",
+    S_HP_PREEMTIVE_STRIKE = "preemptive",
 }
 local MP_STYLE_KEYS = { L_MP = true, S_MP = true }
 
@@ -107,11 +129,10 @@ local BAR_TEXTURE_DIR = "../Addon/BetterBars/textures/"
 -- The newer client does not reuse one fill sprite for both bars: its hp sprite
 -- (300x17) ramps 219..251 while its mp sprite (300x13) ramps 236..253 - half the
 -- depth. Using the HP ramp on the mana bar gives it about twice the shading it
--- should have. Only the extracted retail pair differs this way; the generated
--- textures are single-profile by design and reuse one file for both bars.
+-- should have, so the extracted pair is kept as a pair.
 local BAR_TEXTURE_MP_VARIANT = { bar_retail = true }
 
--- Source size per texture, since they are no longer all the same shape.
+-- Source size per texture.
 --
 -- The extracted pair are the reference sprites at their native 300x17 and
 -- 300x13 rather than a derived ramp. That matters: the sprite is not a pure
@@ -121,8 +142,10 @@ local BAR_TEXTURE_MP_VARIANT = { bar_retail = true }
 -- 1px bright top and bottom lips sharp, where resampling through 32 rows and
 -- back down to 17 blurred them.
 --
--- The generated textures stay 64x32; they are pure vertical gradients by design
--- and have no horizontal structure to lose.
+-- The retail pair is all that ships as of 3.1: the five generated styles it
+-- replaced (flat, gloss, sheen, striped, tube) are gone. The 64x32 fallback
+-- below is what an unlisted name gets, so a PNG dropped into textures/ by hand
+-- still draws without a code change.
 local BAR_TEXTURE_DEFAULT_W, BAR_TEXTURE_DEFAULT_H = 64, 32
 local BAR_TEXTURE_SIZE = {
     bar_retail    = { 300, 17 },
@@ -142,64 +165,122 @@ local EHP_COLORS = { 199 / 255, 80 / 255, 57 / 255, 1 }
 local MP_COLORS = { 50 / 255, 150 / 255, 255 / 255, 1 }
 local CAST_COLORS = { 230 / 255, 180 / 255, 60 / 255, 1 }
 
--- Bar geometry, matching the newer client's boxes.
+-- Preemptive-strike colour: derived from the enemy colour, not configured
+-- separately, so it tracks whatever the player picks.
 --
--- There, every bar is a wrapper window holding its statusbars inset by 2px on
--- all sides, and that 2px is exactly the thickness of the border the background
--- sprite draws. So the wrapper is the fill plus 4, and the configured height is
--- read as the FILL height - which is what the user actually sees and what the
--- retail sprite rects measure (300x17 for HP, 300x13 for MP).
+-- The transform is taken from the client's own pair. statusbar_style.lua gives
+-- L_HP_HOSTILE a trail of (223,69,69) and L_HP_PREEMTIVE_STRIKE (202,110,105).
+-- Pulling each channel toward the brightest one by 0.70 and then scaling by
+-- 0.91 turns the first into (203,105,105) - the second, near enough, and its
+-- small red/green asymmetry looks hand-tuned rather than derived.
 --
--- AAC builds its statusbars flush to the wrapper (0,0 / 0,0), so the inset has
--- to be applied here. statusBarAfterImage gets the same treatment or the damage
--- trail would sit 2px proud of the fill it is meant to sit behind.
--- 1, not 2. The newer client's cell carries a transparent outer ring, so its
--- border sits a pixel inside a 21px wrapper. AAC's frame art (the wing) is drawn
--- around a 19px bar anchored at x=1, so keeping that ring cost a second pixel of
--- inset on every side - visible as a gap left and above the decoration, and as
--- an extra pixel between the two bars. The ring is cropped out of bar_frame.png
--- instead, putting the border flush at the wrapper edge and the fill 1px inside,
--- which lands the wrapper back on AAC's native 19 (fill 17 + 2).
-local BAR_BOX_INSET = 2
+-- So it is the same hue, desaturated and very slightly darkened: a duller,
+-- flatter red that reads clearly as "not your kill" beside a live enemy bar.
+-- Lower PREEMPT_VAL to deepen it further; that is the knob.
+local PREEMPT_SAT = 0.70
+local PREEMPT_VAL = 0.91
 
--- Nudge for the bar's visible content INSIDE its wrapper.
---
--- The wrapper itself must not move: AAC anchors the frame's entire ornamentation
--- to it - heirWing, bg, line, combatIcon, heirFrame, reporterIcon, buffWindow,
--- lootIcon all hang off hpBar/mpBar (unitframe_view.lua:51-132, player.lua:74-133,
--- target.lua:104-197). Re-anchoring the bar drags the wing and the frame art with
--- it, which is not what "move the bar" means here.
---
--- So the backdrop and the fill are offset together by this instead, sliding the
--- visible bar box within a wrapper that stays put.
-local BAR_NUDGE_X = -5
-local BAR_NUDGE_Y = -2
+local function DerivePreemptColors(c)
+    local mx = math.max(c[1] or 0, c[2] or 0, c[3] or 0)
+    local function ch(v)
+        return (mx - (mx - (v or 0)) * PREEMPT_SAT) * PREEMPT_VAL
+    end
+    return { ch(c[1]), ch(c[2]), ch(c[3]), c[4] or 1 }
+end
 
--- How much further right the bar's right edge reaches.
---
--- The reference gives its bar wrapper 304px so that a 2px inset still leaves a
--- 300px fill. AAC hardcodes the wrapper at 300 (player.lua:123), so the same
--- inset yields 296 - 4px short - and BAR_NUDGE_X then shifts that left, putting
--- the right edge 9px inside the wrapper.
---
--- Widening the wrapper itself is not an option: lootIcon anchors off its right
--- edge and the glow spans it, so SetWidth would drag the frame's furniture. The
--- right edge of the CONTENTS is extended instead, which is the same approach the
--- nudge already takes.
-local BAR_NUDGE_W = 7
+local PREEMPT_COLORS = DerivePreemptColors(EHP_COLORS)
 
-local function ApplyBarBox(bar, fillHeight)
+-- UI scale, and why any of this needs to care about it.
+--
+-- Defined HERE, above everything geometric, because these are locals: Lua only
+-- sees a local from its declaration point onward, so a helper declared further
+-- down is simply nil to the code above it - which is exactly how the addon
+-- failed to load with "attempt to call global 'Snap'".
+--
+-- The client scales the whole UI tree by one engine-level factor
+-- (UIParent:SetUIScale / GetUIScale). Widget offsets and extents are in UI
+-- units; device pixels = UI units * scale. The option slider runs 40..160 in
+-- steps of 10, and two of its stops are deliberately NOT round -
+-- F_LAYOUT.GetUIScaleValueByOptionWindowValue maps "80" to 0.85 and "90" to
+-- 0.93 - and the default is 0.85 on any resolution below 1280x864
+-- (screen_option.lua:7-13). A fractional factor is the norm, not an edge case.
+--
+-- It matters because the flat backdrop is built from 1px COLOUR RECTANGLES, and
+-- the client never does that. Its own unit frames contain no CreateColorDrawable
+-- and no SetHeight(1) anywhere - every border, divider and shadow is a ninepart
+-- or threepart TEXTURE cell out of the atlas, and a texture resamples smoothly
+-- at any scale. A 1-UI-unit rectangle at 0.85 is 0.85 device pixels and
+-- rasterises to 0 or 1 depending where it lands: a border row that exists along
+-- part of a bar and vanishes along the rest.
+local function UIScale()
+    local s
+    pcall(function() s = api.Interface:GetUIScale() end)
+    if type(s) ~= "number" or s <= 0 then return 1 end
+    return s
+end
+
+-- Px FIXES a size in device pixels: "2px gap" stays 2 screen pixels at any
+-- scale. Same arithmetic as the client's own F_LAYOUT.CalcDontApplyUIScale(v) =
+-- v / GetUIScale(), which is what it uses wherever something must be a fixed
+-- size on screen. Used for the things that cannot scale below a pixel without
+-- disappearing - border thickness, ramp rows, the outset, the gap, the shift.
+local function Px(n)
+    return n / UIScale()
+end
+
+-- Snap keeps a size in UI UNITS, so it still grows with the UI the way the
+-- client's own layout does (hpBar:SetHeight(19)), but nudges its edges onto the
+-- pixel grid. Used for bar heights and the anchor Y.
+--
+-- Bars need this rather than Px: fixing them in device pixels would freeze them
+-- while the name, level and wing kept scaling, and they would desync at
+-- anything but 100%. But a 17-unit bar at 1.3 is 22.1 device pixels, and that
+-- trailing .1 puts its bottom edge mid-pixel - after which no amount of
+-- device-exact border arithmetic can draw a crisp line against it, because the
+-- thing the line is anchored to is itself half a pixel out.
+--
+-- Lua 5.1 has no math.round; floor(x + 0.5) is it.
+local function Snap(v)
+    local s = UIScale()
+    return math.floor(v * s + 0.5) / s
+end
+
+-- Bar geometry: vanilla, untouched.
+--
+-- AAC builds each bar as a wrapper window whose statusbars sit flush to it
+-- (0,0 / 0,0), and hangs the frame's entire ornamentation off that wrapper -
+-- heirWing, bg, line, combatIcon, heirFrame, reporterIcon, buffWindow and
+-- lootIcon all anchor to hpBar/mpBar (unitframe_view.lua:51-132,
+-- player.lua:74-133, target.lua:104-197).
+--
+-- So the bar keeps AAC's geometry exactly: the configured height IS the wrapper
+-- height, and the fill spans the whole wrapper at its full 300px. Nothing is
+-- inset and nothing is nudged, which is why every piece of furniture lines up -
+-- none of it ever has to be compensated for.
+--
+-- Two earlier schemes are gone. The statusbar used to be inset 2px so the
+-- backdrop's border ring would show around it (wrapper = fill + 4), and before
+-- that the whole box was slid by (-5, -2) with the right edge stretched +7 to
+-- hit the newer client's exact fill rect. The border is now drawn by outsetting
+-- the BACKDROP around the bar instead (BAR_BG_OUTSET below) - which is the same
+-- trick AAC uses for its own frame.bg, anchored a pixel outside the bars.
+--
+-- The anchors are re-stated rather than simply left alone. These are the game's
+-- own widgets and they outlive an addon reload, so a bar inset by a previous
+-- version of this addon would keep that inset until the client next rebuilt the
+-- frame. Writing vanilla back is idempotent and upgrade-safe.
+local function ApplyBarBox(bar, height)
     if not bar then return end
-    bar:SetHeight(fillHeight + BAR_BOX_INSET * 2)
+    -- Snapped, not raw: the bar keeps the configured size in UI units and grows
+    -- with the UI like the client's own bars do, but both its edges land on the
+    -- pixel grid so the backdrop can draw a crisp border against them.
+    bar:SetHeight(Snap(height))
     for _, inner in ipairs({ bar.statusBar, bar.statusBarAfterImage }) do
         if inner then
             pcall(function()
                 inner:RemoveAllAnchors()
-                inner:AddAnchor("TOPLEFT", bar,
-                    BAR_BOX_INSET + BAR_NUDGE_X, BAR_BOX_INSET + BAR_NUDGE_Y)
-                inner:AddAnchor("BOTTOMRIGHT", bar,
-                    -BAR_BOX_INSET + BAR_NUDGE_X + BAR_NUDGE_W,
-                    -BAR_BOX_INSET + BAR_NUDGE_Y)
+                inner:AddAnchor("TOPLEFT", bar, 0, 0)
+                inner:AddAnchor("BOTTOMRIGHT", bar, 0, 0)
             end)
         end
     end
@@ -223,8 +304,10 @@ end
 -- And there is a five-row alpha falloff beneath the top border, an inner shadow,
 -- not a flat fill.
 --
--- The statusbar is inset 2 (BAR_BOX_INSET), so the fill starts exactly where the
--- interior does and the only backdrop visible is the border ring at inset 1.
+-- The fill is flush to the wrapper (vanilla geometry), so this cell is drawn
+-- OUTSET around the bar instead of inside it: the border ring and its inner
+-- shadow land just outside the fill rather than under it, and the interior sits
+-- behind the fill exactly as it does in the reference.
 --
 -- Built once per bar and cached. Rebuilding per restyle would add drawables to
 -- every bar on every target change and never free the old ones.
@@ -242,6 +325,228 @@ local BAR_BG_FADE_A = { 171 / 255, 160 / 255, 147 / 255, 136 / 255, 130 / 255 }
 local BAR_FRAME_PNG = BAR_TEXTURE_DIR .. "bar_frame.png"
 local BAR_FRAME_CELL = 17     -- the cell as the newer client ships it
 local BAR_FRAME_INSET = 8     -- ninepart inset, as the .g declares it
+
+-- How far the backdrop extends beyond the bar on every side.
+--
+-- The cell draws its 1px border one pixel inside its own bounds, plus a
+-- five-row inner shadow beneath the top border. With the fill flush to the
+-- wrapper, an outset of 2 puts that border ring just outside the fill and keeps
+-- the shadow reading as depth along the top edge - the reference look, without
+-- taking a single pixel of width or height off the bar itself.
+--
+-- This is what AAC does with its own frame.bg too: 2.0 anchored it hpBar -1,-1
+-- to mpBar +1,+1, a pixel outside the bars on every side.
+local BAR_BG_OUTSET = 2
+
+-- Gap between the HP bar and the MP bar below it.
+--
+-- MEASURED: this many pixels is what you see between the two bars.
+--
+-- It briefly looked as though the engine added a row - 2 here measured as 3 in
+-- game - but that reading was taken while frame.bg was still visible, and
+-- vanilla's frame art was padding the junction. With that hidden (see the
+-- hideDeco calls in SeatBars) the constant maps straight to the visible gap.
+--
+-- Kept as its own number rather than tied to BAR_BG_OUTSET. They happen to be
+-- equal, but they answer different questions - one is how far the backdrop
+-- reaches beyond its bar, the other is how far apart the two bars sit - and
+-- chaining them together only obscures which one to change.
+local MP_BAR_GAP = 2
+
+-- Horizontal shift applied to both bars, negative = left.
+--
+-- Moves the BARS, not their contents: the wrapper carries its own furniture, so
+-- bg, line, hpBar_deco, combatIcon, lootIcon, heirWing, heirFrame and buffWindow
+-- all travel with it. The level number and the name do NOT - the client anchors
+-- level to the window (unitframe_view.lua: level:AddAnchor("TOPLEFT", w, 0, 0))
+-- and hangs name off level - so they stay put by design.
+local BAR_SHIFT_X = -7
+
+-- Re-seat both bars: the HP bar shifted horizontally, the MP bar MP_BAR_GAP
+-- below it. Every number here is taken from the client's own decompiled source.
+--
+-- HP: the client anchors it TOPLEFT to the frame at (1, level:GetHeight() + 5)
+-- (unitframe_view.lua:48, target.lua:223, target_to_target.lua:71). Target and
+-- target-of-target additionally pin RIGHT to the frame (target.lua:224) so the
+-- bar stretches with the frame's grade width - 180 weak / 300 normal / 430
+-- strong. That anchor has to be reproduced or those bars lose their width; the
+-- player and watch frames instead carry an explicit SetWidth(300), so they take
+-- the TOPLEFT anchor alone.
+--
+-- MP: seated MP_BAR_GAP below. With the fill spanning the bar and the backdrop
+-- outset 2, an HP bar of height h puts its bottom border at y = h (cell row 0
+-- transparent at -2, border row 1 at -1, border row 15 at h, transparent row 16
+-- at h+1); an MP bar seated g below puts its top border at y = h + g - 1.
+--
+--   g = 2  ->  borders at h and h+1: adjacent rows, and the overlap falls
+--             entirely on the two transparent rings, so nothing composites.
+--             This is the reference look, and what the client's own gap of 0
+--             cannot give once the backdrop is outset.
+--   g = 0  ->  the boxes overlap four rows and the HP border lands under the MP
+--             shadow ramp (153 over 171) - a dark seam at the junction.
+--
+-- Two-corner rather than a single centred TOP anchor, matching what the client
+-- does itself (target.lua:226-227): anchoring by centre pins only the midpoint,
+-- so the MP bar would keep its own width and its left edge need not line up with
+-- the HP bar above it.
+local function SeatBars(frame)
+    if not frame or not frame.hpBar then return end
+    local hp = frame.hpBar
+    local s = require("BetterBars/settings").getSettings()
+
+    -- Heights are re-applied here, not just anchors.
+    --
+    -- target.lua and target_to_target.lua set the bar heights THEMSELVES inside
+    -- UpdateFrameStyle_ForUniType, from UNIT_FRAME_HEIGHT (common.lua: HP_BAR
+    -- 19, MP_BAR 13) - target.lua:209,212 and target_to_target.lua:56,59. Since
+    -- that function runs on its own schedule and survives the addon replacing
+    -- ApplyFrameStyle, re-seating only the anchors left the configured height
+    -- overwritten with the client's 19 whenever a target changed. That is what
+    -- made the target-of-target bars look right sometimes and wrong others.
+    local mpShown = frame.mpBar ~= nil and frame.mpBar:IsVisible()
+    local hpH = s.barHeight and s.barHeight.hp or 17
+    local mpH = s.barHeight and s.barHeight.mp or 13
+    if not mpShown then
+        -- No MP bar (slaves, housing, transfers, shipyards): the client gives
+        -- the HP bar the whole span instead, HP_BAR + MP_BAR (target.lua:192).
+        -- The same idea scaled to the configured sizes - the gap is included
+        -- because it is space the two-bar layout would have occupied.
+        hpH = hpH + MP_BAR_GAP + mpH
+    end
+    ApplyBarBox(hp, hpH)
+    if frame.mpBar then ApplyBarBox(frame.mpBar, mpH) end
+
+    pcall(function()
+        -- Reproduce the client's own y so only x changes. GetHeight is read back
+        -- rather than assumed: the level label is font-sized, and the client
+        -- computes this expression fresh every time it re-anchors.
+        local y = 5
+        if frame.level and frame.level.GetHeight then
+            local h = frame.level:GetHeight()
+            if type(h) == "number" and h > 0 then y = h + 5 end
+        end
+        -- Snapped: level:GetHeight() is font-derived and need not be a whole
+        -- number of device pixels, and a bar whose TOP starts mid-pixel cannot
+        -- carry a crisp border however carefully the border itself is built.
+        y = Snap(y)
+        -- The shift is a number of SCREEN pixels - "move it 6px left" should
+        -- mean the same thing at every UI scale - so it converts through Px,
+        -- while the client's own base offset of 1 stays a snapped UI unit. At
+        -- 100% this is exactly 1 + BAR_SHIFT_X, as before.
+        local x = Snap(1) + Px(BAR_SHIFT_X)
+        local stretchRight = frame.unitType == "target"
+            or frame.unitType == "targettarget"
+        hp:RemoveAllAnchors()
+        hp:AddAnchor("TOPLEFT", frame, "TOPLEFT", x, y)
+        if stretchRight then
+            -- Both edges move, so the bar shifts rather than widening
+            hp:AddAnchor("RIGHT", frame, Px(BAR_SHIFT_X), 0)
+        end
+    end)
+
+    -- The MP bar rides the HP bar, so it inherits the shift for free.
+    if frame.mpBar then
+        pcall(function()
+            -- Device pixels, like the border it has to meet: you asked for a
+            -- 2px gap and it should stay 2px on screen at any UI scale, not
+            -- 2.6px at 130% where it lands mid-pixel and measures as 3.
+            local gap = Px(MP_BAR_GAP)
+            frame.mpBar:RemoveAllAnchors()
+            frame.mpBar:AddAnchor("TOPLEFT", hp, "BOTTOMLEFT", 0, gap)
+            frame.mpBar:AddAnchor("TOPRIGHT", hp, "BOTTOMRIGHT", 0, gap)
+        end)
+    end
+
+    -- Re-hide the vanilla separators, every time.
+    --
+    -- The client turns BOTH back on whenever the target type changes:
+    -- target.lua:210 and target_to_target.lua:57 call
+    -- hpBar_deco:SetVisible(true), and target_to_target.lua:70 does the same
+    -- for line. hpBar_deco is the white 8px three-part drawable anchored across
+    -- the HP bar's bottom edge and overhanging it 1px left and 2px right - the
+    -- heavy band that kept reappearing between the bars.
+    --
+    -- ApplyCommonStyle already hides them, but it runs BEFORE
+    -- UpdateFrameStyle_ForUniType, so that hide is undone a moment later. This
+    -- runs from the hook on that function, which is after it - so it sticks.
+    --
+    -- Both Show(false) and SetVisible(false) are called: this addon has always
+    -- used Show while the client uses SetVisible, and they are not known to be
+    -- the same flag, so clearing one may leave the other set.
+    local function hideDeco(d)
+        if not d then return end
+        pcall(function() d:Show(false) end)
+        pcall(function() d:SetVisible(false) end)
+    end
+    -- Re-centre the HP/MP value labels, every restyle.
+    --
+    -- This used to run once in OnLoad and never again - the last piece of the
+    -- addon's styling still applied as a one-shot. Three separate bugs this
+    -- session came from exactly that shape (hpBar_deco, frame.bg and the bar
+    -- heights, all re-set by the client after our setup ran), and a user report
+    -- of labels sitting hard right - vanilla's BOTTOMRIGHT/ALIGN_RIGHT
+    -- placement from unitframe_view.lua:60,71 - while still showing OUR text
+    -- format is exactly what a lost anchor with a surviving SetText wrap looks
+    -- like.
+    --
+    -- Nothing in this client re-anchors them (unitframe.lua only calls Show and
+    -- SetText), so this is belt and braces rather than a known clobber. It costs
+    -- two anchors per restyle and removes the whole failure mode.
+    --
+    -- CENTER on the bar with the label left auto-resizing, which is what the
+    -- frames already do and demonstrably lands correctly. Deliberately not
+    -- switched to the client's other idiom - two-corner anchor plus
+    -- ALIGN_CENTER, as tooltip_view.lua:982-984 does - because that relies on
+    -- the label filling the bar, and whether the text then centres VERTICALLY
+    -- is not something to change blind.
+    local function seatLabel(bar, label)
+        if not bar or not label then return end
+        pcall(function()
+            label:RemoveAllAnchors()
+            label:AddAnchor("CENTER", bar, "CENTER", 0, 0)
+            label.style:SetAlign(ALIGN.CENTER)
+        end)
+    end
+    seatLabel(frame.hpBar, frame.hpBar and frame.hpBar.hpLabel)
+    seatLabel(frame.mpBar, frame.mpBar and frame.mpBar.mpLabel)
+
+    hideDeco(frame.hpBar_deco)
+    hideDeco(frame.line)
+    -- frame.bg belongs in this list too, and is the reason the MP background
+    -- looked like it was sized to vanilla rather than to our height.
+    --
+    -- It is the client's 304x38 frame image (unitframe_view.lua:32), stretched
+    -- across the WHOLE bar stack: every target-type change re-anchors it
+    -- hpBar TOPLEFT(-1,-4) -> mpBar BOTTOMRIGHT(4,4) (target.lua:214-215,
+    -- target_to_target.lua:61-62). Those offsets are built around vanilla's
+    -- 19/13 bars, so with custom heights the art lands at the wrong scale and
+    -- reads as a background that does not follow the MP bar - exactly the gap
+    -- between it and our own shadow ramp.
+    --
+    -- ApplyCommonStyle hides it, but that runs before UpdateFrameStyle_ForUniType
+    -- re-anchors it, so the hide has to be repeated from here.
+    hideDeco(frame.bg)
+end
+
+-- Keep SeatBars applied on the frames that re-anchor their own bars.
+--
+-- target.lua and target_to_target.lua re-seat BOTH bars inside
+-- UpdateFrameStyle_ForUniType (target.lua:222-227), which the game calls on
+-- every target-type change. That is NOT ApplyFrameStyle - the addon replaces
+-- ApplyFrameStyle wholesale, but this one survives and runs on its own
+-- schedule, so without a hook it silently undoes the shift and the MP gap
+-- whenever the target changes. player, watch_target and pet have no such
+-- function; their bars are only touched through ApplyFrameStyle.
+local function HookUniTypeStyle(frame)
+    if not frame or frame.bbUniTypeHooked then return end
+    local orig = frame.UpdateFrameStyle_ForUniType
+    if type(orig) ~= "function" then return end
+    frame.bbUniTypeHooked = true
+    frame.UpdateFrameStyle_ForUniType = function(self, detailType)
+        orig(self, detailType)
+        pcall(SeatBars, self)
+    end
+end
 
 local function ApplyBarBackdrop(bar, opacity)
     if not bar then return end
@@ -265,7 +570,7 @@ local function ApplyBarBackdrop(bar, opacity)
             -- navy noticeably bluer than the cell it came from.
             pcall(function() d:SetSRGB(false) end)
             local loaded = d:SetTgaTexture(BAR_FRAME_PNG)
-            if loaded == false then error("png did not load") end
+            if loaded == false then BBFail() end
             d:SetCoords(0, 0, BAR_FRAME_CELL, BAR_FRAME_CELL)
             d:SetInset(BAR_FRAME_INSET, BAR_FRAME_INSET, BAR_FRAME_INSET, BAR_FRAME_INSET)
             made.nine = d
@@ -273,7 +578,9 @@ local function ApplyBarBackdrop(bar, opacity)
 
         -- Which path we land on decides how faithful the backdrop is, and it
         -- has never been confirmed - no ninepart anywhere in either client calls
-        -- SetTgaTexture. Reported once so it is a fact rather than a guess.
+        -- SetTgaTexture. Recorded so "bbinfo" can report it on demand, and
+        -- announced once so it is a fact rather than a guess.
+        bbBackdropPath = okNine and "ninepart" or "fallback"
         if not bbBackdropPathLogged then
             bbBackdropPathLogged = true
             api.Log:Info("BetterBars: backdrop using "
@@ -309,52 +616,94 @@ local function ApplyBarBackdrop(bar, opacity)
     --
     -- These drawables live on the game's own frame widgets, which outlive an
     -- addon reload, so bar.bbBg is still populated next time round and the
-    -- creation block above is skipped. Anchoring only there meant a changed
-    -- nudge never reached the backdrop - the fill moved and the background
-    -- stayed put, because ApplyBarBox re-anchors the fill every restyle.
+    -- creation block above is skipped. Anchoring only there meant a bar whose
+    -- configured height later changed kept a backdrop sized for the old one.
     local bg = bar.bbBg
-    local trim = bar.bbBottomTrim or 0
+    -- The ENTIRE backdrop is laid out in device pixels, converted to UI units
+    -- through px1. Positions and thicknesses must agree or the cell falls apart:
+    -- with thicknesses in device pixels but offsets left in UI units, at 1.3
+    -- scale the border came out 1 device pixel thick sitting 1.3 device pixels
+    -- from the edge, with the body starting 2.6 in - every boundary landing
+    -- mid-pixel. Same units throughout, and the ring is 1px thick at 1px inset
+    -- at any scale.
+    local px1 = Px(1)
+    local O = BAR_BG_OUTSET * px1
+    local two = 2 * px1
+    -- Recorded from the drawables that actually exist, on every call. Setting it
+    -- only in the creation block above reported "not built yet" forever: these
+    -- drawables live on the game's widgets and survive an addon reload, so the
+    -- creation block is skipped on every load after the first.
+    bbBackdropPath = bg.nine and "ninepart" or "fallback"
     pcall(function()
         if bg.nine then
             bg.nine:RemoveAllAnchors()
-            bg.nine:AddAnchor("TOPLEFT", bar, BAR_NUDGE_X, BAR_NUDGE_Y)
-            bg.nine:AddAnchor("BOTTOMRIGHT", bar,
-                BAR_NUDGE_X + BAR_NUDGE_W, BAR_NUDGE_Y - trim)
+            bg.nine:AddAnchor("TOPLEFT", bar, -O, -O)
+            bg.nine:AddAnchor("BOTTOMRIGHT", bar, O, O)
             return
         end
 
-        bg.body:RemoveAllAnchors()
-        bg.body:AddAnchor("TOPLEFT", bar,
-            2 + BAR_NUDGE_X, 2 + #BAR_BG_FADE_A + BAR_NUDGE_Y)
-        bg.body:AddAnchor("BOTTOMRIGHT", bar,
-            -2 + BAR_NUDGE_X + BAR_NUDGE_W, -2 + BAR_NUDGE_Y - trim)
+        -- The ramp rows and the body are CHAINED - each anchored to the bottom
+        -- of the one above it rather than to an absolute offset from the bar's
+        -- top.
+        --
+        -- Absolute offsets meant every row's position was computed independently
+        -- from the bar's top, so the ramp and the body agreeing depended on the
+        -- two arithmetic expressions staying in step - and a transparent seam
+        -- across the background is what a one-pixel disagreement looks like.
+        -- Chaining makes the question moot: the body starts where the ramp ends
+        -- by construction, and the ramp rows cannot drift apart from each other,
+        -- whatever the engine does with a given offset.
+        local prev
+        for _, d in ipairs(bg.fades) do
+            d:RemoveAllAnchors()
+            if prev then
+                d:AddAnchor("TOPLEFT", prev, "BOTTOMLEFT", 0, 0)
+                d:AddAnchor("TOPRIGHT", prev, "BOTTOMRIGHT", 0, 0)
+            else
+                d:AddAnchor("TOPLEFT", bar, -O + two, 0)
+                d:AddAnchor("TOPRIGHT", bar, O - two, 0)
+            end
+            d:SetHeight(px1)
+            prev = d
+        end
 
-        -- +1 in from whichever corner the anchor names, so the ring sits at
-        -- inset 1 with the cell's outermost pixel left undrawn
+        bg.body:RemoveAllAnchors()
+        if prev then
+            bg.body:AddAnchor("TOPLEFT", prev, "BOTTOMLEFT", 0, 0)
+        else
+            bg.body:AddAnchor("TOPLEFT", bar, -O + two,
+                -O + two + #BAR_BG_FADE_A * px1)
+        end
+        bg.body:AddAnchor("BOTTOMRIGHT", bar, O - two, O - two)
+
+        -- One device pixel in from whichever corner the anchor names, so the
+        -- ring sits at inset 1 with the cell's outermost pixel left undrawn
         local function off(point)
-            local y = (string.find(point, "BOTTOM") and -1 or 1) + BAR_NUDGE_Y
-            if string.find(point, "BOTTOM") then y = y - trim end
-            local x = (string.find(point, "RIGHT") and -1 or 1) + BAR_NUDGE_X
-            if string.find(point, "RIGHT") then x = x + BAR_NUDGE_W end
+            local y = string.find(point, "BOTTOM") and (O - px1) or (-O + px1)
+            local x = string.find(point, "RIGHT") and (O - px1) or (-O + px1)
             return x, y
         end
         for _, spec in ipairs(bg.edges) do
             local d, a1, a2, horizontal = spec[1], spec[2], spec[3], spec[4]
             local x1, y1 = off(a1)
             local x2, y2 = off(a2)
+            if horizontal then
+                -- Pull the horizontal edges in by one so the VERTICAL edges own
+                -- the corners. Previously all four ran corner to corner, so at
+                -- each corner two 153-alpha rectangles covered the same pixel
+                -- and composited to about 217 - four dark dots framing every
+                -- bar. The real cell has a single, lighter, anti-aliased pixel
+                -- there (123/111/111/86 measured off bar_frame.png), so one
+                -- drawable per corner pixel is the closest this path can get.
+                x1 = x1 + (string.find(a1, "RIGHT") and -px1 or px1)
+                x2 = x2 + (string.find(a2, "RIGHT") and -px1 or px1)
+            end
             d:RemoveAllAnchors()
             d:AddAnchor(a1, bar, x1, y1)
             d:AddAnchor(a2, bar, x2, y2)
-            if horizontal then d:SetHeight(1) else d:SetWidth(1) end
+            if horizontal then d:SetHeight(px1) else d:SetWidth(px1) end
         end
 
-        for i, d in ipairs(bg.fades) do
-            d:RemoveAllAnchors()
-            d:AddAnchor("TOPLEFT", bar, 2 + BAR_NUDGE_X, 1 + i + BAR_NUDGE_Y)
-            d:AddAnchor("TOPRIGHT", bar,
-                -2 + BAR_NUDGE_X + BAR_NUDGE_W, 1 + i + BAR_NUDGE_Y)
-            d:SetHeight(1)
-        end
     end)
 
     -- The reference applies NO tint to the unit-frame background: it creates the
@@ -408,6 +757,8 @@ local function ColorBarForKey(bar, key)
         colors = MP_COLORS
     elseif key == "hostile" and s.showHostilityColor ~= false then
         colors = EHP_COLORS
+    elseif key == "preemptive" and s.showHostilityColor ~= false then
+        colors = PREEMPT_COLORS
     end
     bar.statusBar:SetBarColor(unpack(colors))
     ApplyFillTexture(bar, colors, key == "mp")
@@ -435,56 +786,21 @@ end
 -- Guarded rather than assumed: if the wrap never fires, or the style carries no
 -- bbKey, frame.bbStyleKey stays nil and UpdateFrameStyles falls back to the old
 -- resolution. Nothing depends on the hook succeeding.
--- Make the combat glow follow the bars.
+-- The combat glow is left entirely alone.
 --
--- Re-anchoring it once does not hold: the game re-anchors it itself on target
--- and grade changes (target.lua:183-204, target_to_target.lua:41-62), with
--- different offsets per path - -10/-10 to 10,8 when the MP bar is hidden, to
--- 10,10 when it is not, and -10/-8 for target-of-target. Any fixed set of
--- numbers here is wrong for some frame and gets overwritten anyway.
+-- It used to be wrapped: AddAnchor was intercepted so that anything anchored to
+-- one of this frame's bars picked up the nudge, because the glow anchors to the
+-- bar WRAPPERS while the nudge moved only their contents. With the nudge gone
+-- the bar box fills the wrapper the glow already anchors to, so the game's own
+-- anchoring is correct and there is nothing to correct.
 --
--- So the drawable's own AddAnchor is wrapped instead: anything anchored to one
--- of this frame's bars picks up BAR_NUDGE automatically, whether the caller is
--- this addon or the game. AddAnchor takes either (point, target, x, y) or
--- (point, target, relPoint, x, y), so the third argument decides which pair of
--- numbers to adjust.
--- How far to pull each glow edge in, beyond the nudge:
---   1px because the backdrop's outermost pixel is the cell's transparent ring,
---        so the bar's visible border sits one pixel inside the wrapper rect the
---        glow anchors to;
---   2px because AAC margins the glow at 10 while the newer client uses 8
---        (UNIT_FRAME_COMBAT_ICON_OFFSET), and the game's own re-anchors hardcode
---        10 - correcting here catches those too.
-local BAR_GLOW_TIGHTEN = 3
+-- Leaving it untouched is also the more robust choice. The game re-anchors the
+-- glow itself on target and grade changes (target.lua:183-204,
+-- target_to_target.lua:41-62) with different offsets per code path - -10/-10 to
+-- 10,8 when the MP bar is hidden, to 10,10 when it is not, and -10/-8 for
+-- target-of-target - so any offset this addon applied had to be re-applied
+-- through a hook to survive, and was wrong for some frame regardless.
 
-local function HookGlowAnchor(frame)
-    local d = frame and frame.combatIcon
-    if not d or d.bbAnchorHooked then return end
-    local orig = d.AddAnchor
-    if type(orig) ~= "function" then return end
-    d.bbAnchorHooked = true
-    d.AddAnchor = function(self, point, target, p4, p5, p6)
-        if target == frame.hpBar or target == frame.mpBar then
-            -- Pull each edge toward the middle: a TOP or LEFT edge moves down or
-            -- right, a BOTTOM or RIGHT edge moves up or left.
-            local isRight = string.find(point, "RIGHT")
-            local tx = isRight and -BAR_GLOW_TIGHTEN or BAR_GLOW_TIGHTEN
-            local ty = string.find(point, "BOTTOM") and -BAR_GLOW_TIGHTEN or BAR_GLOW_TIGHTEN
-            -- The bar's contents reach BAR_NUDGE_W further right than the
-            -- wrapper this glow anchors to, so its right edge has to travel the
-            -- same distance or it stops short of the bar it is meant to wrap.
-            if isRight then tx = tx + BAR_NUDGE_W end
-            if type(p4) == "string" then
-                p5 = (p5 or 0) + BAR_NUDGE_X + tx
-                p6 = (p6 or 0) + BAR_NUDGE_Y + ty
-            else
-                p4 = (p4 or 0) + BAR_NUDGE_X + tx
-                p5 = (p5 or 0) + BAR_NUDGE_Y + ty
-            end
-        end
-        return orig(self, point, target, p4, p5, p6)
-    end
-end
 
 local function HookBarStyle(frame, bar)
     if not bar or bar.bbHooked then return end
@@ -587,7 +903,7 @@ local function SetupFrame(unitType, uicType)
   pcall(function()
       HookBarStyle(frame, frame.hpBar)
       HookBarStyle(frame, frame.mpBar)
-      HookGlowAnchor(frame)
+      HookUniTypeStyle(frame)
   end)
   -- The player frame is styled ONCE at UI creation (player.lua:120), before
   -- this addon rebuilds the style coords - so its statusBar keeps sampling
@@ -662,6 +978,9 @@ local function RefreshAfterImageColors()
     for _, n in ipairs({ "L_HP_HOSTILE", "S_HP_HOSTILE" }) do
         setTrail(STATUSBAR_STYLE[n], EHP_COLORS)
     end
+    for _, n in ipairs({ "L_HP_PREEMTIVE_STRIKE", "S_HP_PREEMTIVE_STRIKE" }) do
+        setTrail(STATUSBAR_STYLE[n], PREEMPT_COLORS)
+    end
     for _, n in ipairs({ "L_MP", "S_MP" }) do
         setTrail(STATUSBAR_STYLE[n], MP_COLORS)
     end
@@ -711,20 +1030,6 @@ local function ApplyCommonStyle(frame)
     local s = require("BetterBars/settings").getSettings()
     local bgOpacity = s.backgroundOpacity or 0.6
 
-    -- How far the bars overlap beyond the reference's own -2.
-    --
-    -- At -2 the HP bar's bottom border and the MP bar's top border land on
-    -- separate rows at 153 alpha each. Any tighter and they land on the SAME row
-    -- and composite to 214 - a darker, visibly bluer line. The border is baked
-    -- into the backdrop texture so a single edge cannot be hidden; instead the
-    -- HP backdrop is shortened by the excess, moving its bottom border up out of
-    -- the collision and leaving one 153 row at the junction.
-    -- -1 leaves one clear row between the two bar borders; -2 is the reference,
-    -- where they sit directly against each other. Anything tighter lands both
-    -- borders on the SAME row, compositing them to 214 - a dark line the
-    -- reference does not have.
-    local barDy = s.showBarSeparation ~= false and -1 or -2
-    local barOverlap = math.max(0, -2 - barDy)
     
     if frame.line then
         frame.line:Show(false)  -- Hide line
@@ -745,7 +1050,6 @@ local function ApplyCommonStyle(frame)
     if frame.bg then
         pcall(function() frame.bg:Show(false) end)
     end
-    if frame.hpBar then frame.hpBar.bbBottomTrim = mpVisible and barOverlap or 0 end
     ApplyBarBackdrop(frame.hpBar, bgOpacity)
     if mpVisible then
         ApplyBarBackdrop(frame.mpBar, bgOpacity)
@@ -786,51 +1090,13 @@ local function ApplyCommonStyle(frame)
         end)
     end
 
-    -- Combat / hostility glow.
-    --
-    -- AAC anchors it to the bar WRAPPERS at -10 / +10 (unitframe_view.lua:84-85),
-    -- and the wrappers deliberately do not move, so the glow stayed put while the
-    -- bars slid to the nudge offset inside them. It carries the same offset now.
-    -- Bottom-right follows the MP bar only while that bar is showing, matching
-    -- what AAC does itself when the MP bar is hidden.
-    if frame.combatIcon and frame.hpBar then
-        pcall(function()
-            frame.combatIcon:RemoveAllAnchors()
-            -- Raw offsets: HookGlowAnchor adds BAR_NUDGE on the way through,
-            -- so adding it here too would apply it twice.
-            frame.combatIcon:AddAnchor("TOPLEFT", frame.hpBar, -10, -10)
-            frame.combatIcon:AddAnchor("BOTTOMRIGHT",
-                mpVisible and frame.mpBar or frame.hpBar, 10, 10)
-        end)
-    end
+    -- Combat / hostility glow: not touched. AAC anchors it to the bar wrappers
+    -- itself (unitframe_view.lua:84-85) and re-anchors it on target and grade
+    -- changes, and the wrappers are where this addon leaves them - so vanilla's
+    -- anchoring already frames the bar correctly, including the bottom edge
+    -- following the MP bar only while that bar is showing.
 
-    -- Bar separation. OFF is the newer client's own geometry: it anchors mpBar
-    -- TOPLEFT to hpBar BOTTOMLEFT at -2, a deliberate 2px OVERLAP so the two
-    -- bar borders share an edge rather than leaving a seam. ON keeps the
-    -- visible 1px gap for anyone who prefers the bars separated.
-    if frame.mpBar and frame.hpBar then
-        -- Two-corner, not a single centred TOP anchor. Anchoring by centre only
-        -- pins the midpoint, so the MP bar keeps its own width and its left edge
-        -- need not line up with the HP bar above it - which is where the uneven
-        -- padding came from. Pinning both corners makes it inherit the HP bar's
-        -- exact span. AAC does the same thing itself in target.lua.
-        -- Visible spacing is hpInset(2) + dy + mpInset(2), so dy = -2 puts the
-        -- two borders together at 2px, which is what the newer client does. The
-        -- old +1 predates the insets and stacked a gap on top of a gap, landing
-        -- at 5px. OFF is now retail-exact; ON just widens it by one.
-        -- With the border flush at the wrapper edge, dy = 0 puts the HP bar's
-        -- bottom border directly against the MP bar's top border - the two
-        -- adjacent border rows the newer client shows. ON adds one pixel.
-        -- -2, not -3. Compositing the two backgrounds at their real offsets
-        -- shows why: at -2 the HP bar's bottom border and the MP bar's top
-        -- border land on SEPARATE rows, 153 alpha each, which is what the newer
-        -- client draws. At -3 they land on the SAME row and alpha-composite to
-        -- 214 - a darker, noticeably bluer line the reference does not have.
-        local dy = barDy
-        frame.mpBar:RemoveAllAnchors()
-        frame.mpBar:AddAnchor("TOPLEFT", frame.hpBar, "BOTTOMLEFT", 0, dy)
-        frame.mpBar:AddAnchor("TOPRIGHT", frame.hpBar, "BOTTOMRIGHT", 0, dy)
-    end
+    SeatBars(frame)
 
     -- Set the MP bar color for all frames. A frame without an MP bar is normal
     -- (some pet frames), so its absence is not an error worth logging - this ran
@@ -847,8 +1113,10 @@ local function StylePlayerFrame(frame)
     local s = require("BetterBars/settings").getSettings()
     ApplyCommonStyle(frame)
     if frame then
-      ApplyBarBox(frame.hpBar, s.barHeight.hp or 17)
-      ApplyBarBox(frame.mpBar, s.barHeight.mp or 13)
+      -- Heights and anchors are both applied by SeatBars, from ApplyCommonStyle
+      -- above. Setting them again here would force the HP height unconditionally
+      -- and undo the full-span treatment SeatBars gives a frame whose MP bar is
+      -- hidden.
       -- The HP style is deliberately NOT forced here. Applying L_HP_FRIENDLY on
       -- every restyle overwrote whatever hostility style the game had just
       -- chosen - and, through the hook, the recorded key with it - so hostile
@@ -867,8 +1135,10 @@ local function StyleTargetFrame(frame)
     local s = require("BetterBars/settings").getSettings()
     ApplyCommonStyle(frame)
     if frame then
-      ApplyBarBox(frame.hpBar, s.barHeight.hp or 17)
-      ApplyBarBox(frame.mpBar, s.barHeight.mp or 13)
+      -- Heights and anchors are both applied by SeatBars, from ApplyCommonStyle
+      -- above. Setting them again here would force the HP height unconditionally
+      -- and undo the full-span treatment SeatBars gives a frame whose MP bar is
+      -- hidden.
       frame.line:Show(false)
     end
   end
@@ -881,8 +1151,10 @@ local function StyleTargetTargetFrame(frame)
     local s = require("BetterBars/settings").getSettings()
     ApplyCommonStyle(frame)
     if frame then 
-      ApplyBarBox(frame.hpBar, s.barHeight.hp or 17)
-      ApplyBarBox(frame.mpBar, s.barHeight.mp or 13)
+      -- Heights and anchors are both applied by SeatBars, from ApplyCommonStyle
+      -- above. Setting them again here would force the HP height unconditionally
+      -- and undo the full-span treatment SeatBars gives a frame whose MP bar is
+      -- hidden.
       frame.mpBar:ApplyBarTexture(STATUSBAR_STYLE.S_MP)
     end
   end
@@ -895,8 +1167,10 @@ local function StyleWatchTargetFrame(frame)
     local s = require("BetterBars/settings").getSettings()
     ApplyCommonStyle(frame)
     if frame then 
-      ApplyBarBox(frame.hpBar, s.barHeight.hp or 17)
-      ApplyBarBox(frame.mpBar, s.barHeight.mp or 13)
+      -- Heights and anchors are both applied by SeatBars, from ApplyCommonStyle
+      -- above. Setting them again here would force the HP height unconditionally
+      -- and undo the full-span treatment SeatBars gives a frame whose MP bar is
+      -- hidden.
     end
   end
   frame:ApplyFrameStyle()
@@ -912,8 +1186,7 @@ local function WrapPetLabel(bar, label, unitToken, isHP)
     if not label or label.SetTextOrig then return end
     pcall(function()
         label:RemoveAllAnchors()
-        label:AddAnchor("CENTER", bar, "CENTER",
-            BAR_NUDGE_X + BAR_NUDGE_W / 2, BAR_NUDGE_Y)
+        label:AddAnchor("CENTER", bar, "CENTER", 0, 0)
         label.style:SetAlign(ALIGN.CENTER)
     end)
     label.SetTextOrig = label.SetText
@@ -949,7 +1222,14 @@ local function StylePetFrame(frame)
             frame.hpBar.statusBar:SetBarColor(unpack(HP_COLORS))
             ApplyFillTexture(frame.hpBar, HP_COLORS)
         end
-        ApplyBarBox(frame.hpBar, s.barHeight.hp and math.max(13, s.barHeight.hp - 2) or 15)
+        -- Heights come from SeatBars via ApplyCommonStyle, same as every other
+        -- frame. The client builds pet frames with the very same
+        -- CreateUnitFrame (pet.lua:4), so their bars start at the identical
+        -- 19/13 and its own ApplyFrameStyle only ever changes the WIDTH, to
+        -- PET_FRAME_WIDTH = 120 (pet.lua:60-61). The old "height - 2, floored
+        -- at 13" shrink was an addon invention written for the previous
+        -- fill-height semantics, so under wrapper semantics it silently made
+        -- pet bars shorter than asked for - the setting looked inert.
         if unitToken then
             WrapPetLabel(frame.hpBar, frame.hpBar.hpLabel, unitToken, true)
         end
@@ -959,7 +1239,7 @@ local function StylePetFrame(frame)
             frame.mpBar.statusBar:SetBarColor(unpack(MP_COLORS))
             ApplyFillTexture(frame.mpBar, MP_COLORS, true)
         end
-        ApplyBarBox(frame.mpBar, s.barHeight.mp and math.max(11, s.barHeight.mp - 2) or 11)
+        -- Height applied by SeatBars, as above
         if unitToken then
             WrapPetLabel(frame.mpBar, frame.mpBar.mpLabel, unitToken, false)
         end
@@ -967,11 +1247,21 @@ local function StylePetFrame(frame)
 end
 
 local function StyleAllPetFrames()
-    if petFrame then
+    if not petFrame then return end
+    -- Walked with pairs rather than a 1..2 index sweep. The client keys this
+    -- table by the engine's MATE_TYPE constants (pet.lua:169,
+    -- petFrame[mateType] = CreatePetFrame(...)), and those are C-side globals
+    -- whose values never appear in the Lua - so assuming they are 1 and 2 is a
+    -- guess. The index loop is kept as a fallback in case the sandbox proxy
+    -- will not enumerate.
+    local seen, ok = {}, pcall(function()
+        for k, f in pairs(petFrame) do
+            if f then seen[k] = true; StylePetFrame(f) end
+        end
+    end)
+    if not ok then
         for i = 1, 2 do
-            if petFrame[i] then
-                StylePetFrame(petFrame[i])
-            end
+            if petFrame[i] and not seen[i] then StylePetFrame(petFrame[i]) end
         end
     end
 end
@@ -1170,7 +1460,7 @@ end
 betterBarsEventWnd:SetHandler("OnEvent", betterBarsEventWnd.OnEvent)
 betterBarsEventWnd:RegisterEvent("SPAWN_PET")
 ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
--- Create info labels (Class, GS, Guild) on a frame — one-time creation
+-- Create info labels (Class, GS, Guild) on a frame â€” one-time creation
 local function CreateInfoLabels(frame, unitType)
     if frame.infoContainer then return end
 
@@ -1181,6 +1471,13 @@ local function CreateInfoLabels(frame, unitType)
     container:SetExtent(1, 1)
     container:AddAnchor("TOPLEFT", frame, "BOTTOMLEFT", 0, 0)
     container:Show(true)
+    -- Click-through, container included: these are labels sitting on top of the
+    -- unit frame, and anything they swallow is a click that should have hit the
+    -- frame - selecting the target, opening its menu, dragging the frame. The
+    -- guild label is 160 wide and the class label 120, so they cover a lot of
+    -- the row. Clickable is probed rather than assumed: it is not guaranteed on
+    -- every widget type the sandbox hands back.
+    pcall(function() container:Clickable(false) end)
 
     local function makeLabel(id, w)
         local lbl = container:CreateChildWidget("label", unitType .. id, 0, true)
@@ -1188,6 +1485,7 @@ local function CreateInfoLabels(frame, unitType)
         lbl.style:SetAlign(ALIGN.CENTER)
         lbl.style:SetFontSize(12)
         lbl.style:SetColor(1, 1, 1, 1)
+        pcall(function() lbl:Clickable(false) end)
         lbl:Show(true)
         return lbl
     end
@@ -1204,7 +1502,6 @@ end
 local function AnchorInfoLabels(frame)
     local s = require("BetterBars/settings").getSettings()
     local off = s.infoOffsets or {}
-    local centerX = BAR_NUDGE_X + BAR_NUDGE_W / 2
     local hpBar = frame.hpBar
     if not hpBar then return end
     local bottomBar = (frame.mpBar and frame.mpBar:IsVisible()) and frame.mpBar or hpBar
@@ -1215,7 +1512,7 @@ local function AnchorInfoLabels(frame)
         pcall(function()
             lbl:RemoveAllAnchors()
             lbl:AddAnchor(point, bar, barPoint,
-                centerX + (o.x or 0), baseY + (o.y or 0))
+                (o.x or 0), baseY + (o.y or 0))
         end)
     end
     seat(frame.classLabel, off.class, "BOTTOM", hpBar, "TOP", -4)
@@ -1225,10 +1522,14 @@ end
 
 -- Update info labels content from game state
 local function UpdateInfoLabels(frame, unitType)
-    -- Own class, gear score and guild are already known to the player, and
-    -- the target-of-target frame is too small for the row - neither carries
-    -- info labels.
-    if unitType == "player" or unitType == "targettarget" then
+    -- Info labels belong to the target frame and nothing else.
+    --
+    -- A whitelist rather than a list of exclusions: your own class, gear score
+    -- and guild are already known to you, target-of-target is far too small for
+    -- the row, and the watch (tracked) target is a secondary frame the row only
+    -- clutters. Stating the one frame that gets them means a frame added later
+    -- stays clean by default instead of inheriting the labels by omission.
+    if unitType ~= "target" then
         if frame.infoContainer then frame.infoContainer:Show(false) end
         return
     end
@@ -1359,7 +1660,19 @@ local function UpdateFrameStyles()
             if unitType == "watchtarget" then StyleWatchTargetFrame(frame) end
 
             -- Set HP bar color based on hostility using unitInfo.faction
-            if frame.hpBar and frame.hpBar.statusBar then
+            --
+            -- The player frame is exempt from the whole resolution below: you
+            -- are never hostile to yourself, and the fallbacks are not safe to
+            -- run against "player". UnitIsForceAttack("player") answers true
+            -- whenever something has made you force-attackable - Bloodlust and
+            -- friends - which flipped isHostile and painted the player's own
+            -- HP bar enemy-red mid-fight. The style key the game applies to the
+            -- player is always L_HP_FRIENDLY, so friendly is simply correct.
+            if unitType == "player" and frame.hpBar and frame.hpBar.statusBar then
+                frame.hpBar.statusBar:SetBarColor(unpack(HP_COLORS))
+                ApplyFillTexture(frame.hpBar, HP_COLORS)
+                SetBarTrail(frame.hpBar, HP_COLORS)
+            elseif frame.hpBar and frame.hpBar.statusBar then
                 local isHostile = false -- Default to friendly/neutral
                 local hadUnitInfo = false
 
@@ -1384,7 +1697,7 @@ local function UpdateFrameStyles()
 
                 if unitId and unitId ~= 0 then
                     local unitInfo = nil
-                    -- Fallback to GetUnitInfoById(id) only — UnitInfo tried above
+                    -- Fallback to GetUnitInfoById(id) only â€” UnitInfo tried above
                     if api.Unit and api.Unit.GetUnitInfoById then
                         local success, result = pcall(api.Unit.GetUnitInfoById, api.Unit, unitId)
                         if success and result then
@@ -1402,7 +1715,7 @@ local function UpdateFrameStyles()
                         elseif unitInfo.faction == "hostile" then
                             isHostile = true
                         elseif unitInfo.faction and unitInfo.faction ~= "" and unitInfo.faction ~= "neutral" and unitInfo.faction ~= "friendly" then
-                            -- Real faction name — check if it matches player
+                            -- Real faction name â€” check if it matches player
                             local okPF, pf = pcall(api.Unit.GetFactionName, api.Unit, "player")
                             if okPF and pf and pf ~= "" then
                                 if unitInfo.faction ~= pf then
@@ -1410,7 +1723,7 @@ local function UpdateFrameStyles()
                                 end
                                 -- same faction = friendly (isHostile stays false)
                             else
-                                isHostile = true  -- can't confirm friendly → enemy
+                                isHostile = true  -- can't confirm friendly â†’ enemy
                             end
                         end
                         -- If faction is nil/empty/neutral/friendly here, isHostile stays false = friendly
@@ -1421,7 +1734,7 @@ local function UpdateFrameStyles()
                     -- api.Log:Warn("BetterBars: Could not get valid unitId for unitType: " .. unitType .. ". Defaulting color.")
                 end
 
-                -- Try UnitInfo(unitType) — takes a unit string like "target", works even when unitId is 0
+                -- Try UnitInfo(unitType) â€” takes a unit string like "target", works even when unitId is 0
                 -- This runs AFTER the unitId block so it doesn't interfere with hadUnitInfo from GetUnitInfoById
                 if not hadUnitInfo and api.Unit and api.Unit.UnitInfo then
                     local success, result = pcall(api.Unit.UnitInfo, api.Unit, unitType)
@@ -1454,7 +1767,7 @@ local function UpdateFrameStyles()
                     local maxHP = api.Unit:UnitMaxHealth(unitType)
                     if maxHP and maxHP <= 0 then isHostile = true end
                 end
-                -- No unitInfo data (buildings) and nothing proved friendly → assume hostile
+                -- No unitInfo data (buildings) and nothing proved friendly â†’ assume hostile
                 if not isHostile and not hadUnitInfo then
                     isHostile = true
                 end
@@ -1470,7 +1783,14 @@ local function UpdateFrameStyles()
                 -- absent before trusting isHostile meant one stale key disabled
                 -- hostility colouring entirely.
                 local hpColor = HP_COLORS
-                if isHousing then
+                -- The game's own preemptive-strike verdict wins outright. It
+                -- knows something this addon cannot derive - who landed the
+                -- first hit - so no amount of faction resolution should be
+                -- allowed to overwrite it with plain enemy red.
+                if frame.bbStyleKey == "preemptive"
+                    and s.showHostilityColor ~= false then
+                    hpColor = PREEMPT_COLORS
+                elseif isHousing then
                     -- Trust the game's own verdict alone. The "no unitInfo =
                     -- assume hostile" guess below is exactly what painted every
                     -- house red: it OR'd over the game's correct friendly key.
@@ -1558,6 +1878,11 @@ function UpdateColorsFromSettings()
         }
     end
     
+    -- The preemptive-strike red follows the enemy colour, so it has to be
+    -- re-derived whenever that changes - before the trails are refreshed, since
+    -- those read it.
+    PREEMPT_COLORS = DerivePreemptColors(EHP_COLORS)
+
     -- Derive each style's damage trail from the colour it paints with, before
     -- restyling - UpdateFrameStyles re-applies the styles and would otherwise
     -- push the previous trail colours back onto the bars.
@@ -1575,10 +1900,17 @@ function UpdateColorsFromSettings()
     -- Cast bar: creation, colour and the on/off toggle all resolve here, so
     -- a settings change applies live.
     pcall(SyncCastBar)
+
+    -- Abyssal charge bar. Refresh re-attempts setup if the bubble bar did not
+    -- exist yet at load, so a class that gains it later still gets picked up.
+    pcall(function() require("BetterBars/abyssal").Refresh() end)
 end
 ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 -- Handler for chat messages to detect commands
 local DBG_DUMP_PATH = "BetterBars/bbdebug_dump.txt"
+-- Overwritten each run rather than appended: this is a snapshot of current
+-- state, so the latest one is the only one that matters.
+local INFO_DUMP_PATH = "BetterBars/bbinfo_dump.txt"
 -- Cached: this handler runs on EVERY chat line, and the player's name never
 -- changes mid-session - two api calls per message added up to nothing but
 -- waste.
@@ -1605,8 +1937,117 @@ local function HandleChatCommand(channel, unit, isHostile, name, message, speake
     end
   end
 
-  -- Quick fill-texture switch, so the PNGs can be tried without the settings
-  -- window: "bbtex gloss" | "bbtex striped" | "bbtex flat" | "bbtex none".
+  -- "bbinfo": report what the addon is actually doing right now.
+  --
+  -- Chiefly answers whether the border is the exact ninepart cell or the
+  -- approximate flat-rectangle fallback - the two look different at the corners
+  -- and there is no other way to tell from in-game. Also dumps the live bar
+  -- heights, which is how you catch the client overwriting them, and the pet
+  -- frames, which confirms the pairs() enumeration is finding them.
+  if playerName == name and message == "bbinfo" then
+    local s = require("BetterBars/settings").getSettings()
+    -- Mirrored to chat AND to a file. api.Log:Info may or may not reach the
+    -- chat window, and the report is worth having either way; File:Write puts
+    -- it at <Addon>/BetterBars/bbinfo_dump.txt (ADDON_API.baseDir is the
+    -- client's UCC directory with "USER" stripped, plus "/Addon").
+    --
+    -- The line array is handed over whole rather than concatenated: File:Write
+    -- runs its argument through serializeTable, which %q-quotes a bare string
+    -- and escapes every newline into one long blob. A table comes out as one
+    -- readable quoted line per entry.
+    local lines = {}
+    local function say(t)
+      api.Log:Info(t)
+      table.insert(lines, t)
+    end
+    local pathText = "not built yet"
+    if bbBackdropPath == "ninepart" then
+      pathText = "ninepart cell (exact)"
+    elseif bbBackdropPath == "fallback" then
+      pathText = "flat rectangles (approximate)"
+    end
+    say("=== BetterBars " .. tostring(BetterBars.version) .. " ===")
+    say("  backdrop: " .. pathText)
+    say(string.format("  geometry: shift %d, mp gap %d, bg outset %d",
+      BAR_SHIFT_X, MP_BAR_GAP, BAR_BG_OUTSET))
+    -- 1.0 means UI units and device pixels are the same thing and scaling is
+    -- exonerated; anything else and every thin element is fractional.
+    local sc = UIScale()
+    say(string.format("  ui scale: %.4f  (1 device px = %.4f UI units)", sc, Px(1)))
+    say(string.format("  settings: hp %s, mp %s, texture %s, bg %.1f",
+      tostring(s.barHeight and s.barHeight.hp),
+      tostring(s.barHeight and s.barHeight.mp),
+      tostring(s.barTexture), tonumber(s.backgroundOpacity) or 0))
+    -- Describe a bar's backdrop by what it actually holds, so a fallback that
+    -- half-built (missing body, short on ramp rows) is visible rather than
+    -- being reported as a working "flat".
+    local function describeBg(b)
+      local out = "none"
+      pcall(function()
+        if not b or not b.bbBg then return end
+        local g = b.bbBg
+        if g.nine then out = "nine" return end
+        out = string.format("flat %s/%de/%df",
+          g.body and "body" or "NOBODY",
+          g.edges and #g.edges or 0,
+          g.fades and #g.fades or 0)
+      end)
+      return out
+    end
+    for _, ut in ipairs({ "player", "target", "targettarget", "watchtarget" }) do
+      local f = FrameLabels[ut]
+      if f then
+        local hph, mph, vis = "?", "-", "-"
+        pcall(function() if f.hpBar then hph = tostring(f.hpBar:GetHeight()) end end)
+        pcall(function() if f.mpBar then mph = tostring(f.mpBar:GetHeight()) end end)
+        pcall(function()
+          if f.mpBar then vis = f.mpBar:IsVisible() and "shown" or "hidden" end
+        end)
+        say(string.format("  %-12s hp %-4s mp %-4s %-6s key=%s",
+          ut, hph, mph, vis, tostring(f.bbStyleKey)))
+        -- deco/line are the vanilla separators the client re-shows on every
+        -- target-type change; VISIBLE here means the re-hide is not sticking.
+        local deco, ln = "-", "-"
+        pcall(function()
+          if f.hpBar_deco then deco = f.hpBar_deco:IsVisible() and "VISIBLE" or "hidden" end
+        end)
+        pcall(function()
+          if f.line then ln = f.line:IsVisible() and "VISIBLE" or "hidden" end
+        end)
+        say(string.format("      hpBg %-18s mpBg %-18s deco %-7s line %s",
+          describeBg(f.hpBar), describeBg(f.mpBar), deco, ln))
+      end
+    end
+    if petFrame then
+      local found = false
+      pcall(function()
+        for k, f in pairs(petFrame) do
+          if f and f.hpBar then
+            found = true
+            local hph, mph = "?", "-"
+            pcall(function() hph = tostring(f.hpBar:GetHeight()) end)
+            pcall(function() if f.mpBar then mph = tostring(f.mpBar:GetHeight()) end end)
+            say(string.format("  pet[%-6s] hp %-4s mp %-4s", tostring(k), hph, mph))
+          end
+        end
+      end)
+      if not found then say("  pet: none out (or not enumerable)") end
+    end
+    local okT, ts = pcall(api.Time.GetLocalTime, api.Time)
+    say("=== end (t=" .. (okT and tostring(ts) or "?") .. ") ===")
+    local okW, werr = pcall(function()
+      api.File:Write(INFO_DUMP_PATH, lines)
+    end)
+    if okW then
+      api.Log:Info("BetterBars: written to " .. INFO_DUMP_PATH)
+    else
+      api.Log:Err("BetterBars: could not write " .. INFO_DUMP_PATH
+        .. " - " .. tostring(werr))
+    end
+  end
+
+  -- Quick fill-texture switch, so a PNG can be tried without the settings
+  -- window: "bbtex retail" | "bbtex none", or any file dropped into textures/.
   -- The leading "bar_" is optional - the files are textures/bar_<name>.png.
   if playerName == name and string.sub(message, 1, 6) == "bbtex " then
     local which = string.sub(message, 7)
@@ -1735,6 +2176,11 @@ local function OnLoad()
   SetupFrame("targettarget", UIC.TARGET_OF_TARGET_FRAME)
   SetupFrame("watchtarget", UIC.WATCH_TARGET_FRAME)
 
+  -- Abyssal charge bar: restyles the client's bubble action bar in place.
+  -- Silently does nothing for classes without the high-ability feature set,
+  -- which is most of them - the bar simply is not created for those.
+  pcall(function() require("BetterBars/abyssal").Setup() end)
+
   UpdateFrameStyles()
 
   -- Pets already out when the addon loads (a /reload with a summon active)
@@ -1769,17 +2215,15 @@ local function OnLoad()
       local mpLabel = frame.mpBar and frame.mpBar.mpLabel
       local capturedType = unitType
 
-      if hpLabel then
-          -- Centre the HP label on the VISIBLE bar, not on the wrapper. The
-          -- wrapper deliberately stays where AAC put it (the frame art hangs off
-          -- it), and the bar's contents are offset inside it by BAR_NUDGE - so
-          -- the label has to carry the same offset or it centres on a box the
-          -- bar no longer fills.
-          hpLabel:RemoveAllAnchors()
-          hpLabel:AddAnchor("CENTER", frame.hpBar, "CENTER",
-              BAR_NUDGE_X + BAR_NUDGE_W / 2, BAR_NUDGE_Y)
-          hpLabel.style:SetAlign(ALIGN.CENTER)
-
+      -- Centring is NOT done here any more - SeatBars re-states it on every
+      -- restyle. Only the SetText wrap stays a one-shot, because wrapping is
+      -- the one thing that must not happen twice.
+      if hpLabel and not hpLabel.SetTextOrig then
+          -- Guarded on SetTextOrig. /reload does not fire OnUnload, so OnLoad
+          -- can run again over an already-wrapped label; without the guard
+          -- SetTextOrig would capture the previous WRAPPER, chaining a second
+          -- copy onto every call and leaving OnUnload restoring a wrapper
+          -- instead of the original. WrapPetLabel has always guarded this way.
           hpLabel.SetTextOrig = hpLabel.SetText
           hpLabel.SetText = function(self, text)
               pcall(function()
@@ -1796,13 +2240,7 @@ local function OnLoad()
           end
       end
 
-      if mpLabel then
-          -- Same offset as the HP label above
-          mpLabel:RemoveAllAnchors()
-          mpLabel:AddAnchor("CENTER", frame.mpBar, "CENTER",
-              BAR_NUDGE_X + BAR_NUDGE_W / 2, BAR_NUDGE_Y)
-          mpLabel.style:SetAlign(ALIGN.CENTER)
-
+      if mpLabel and not mpLabel.SetTextOrig then
           mpLabel.SetTextOrig = mpLabel.SetText
           mpLabel.SetText = function(self, text)
               pcall(function()
@@ -1945,6 +2383,26 @@ local function OnLoad()
         end
       end)
     end
+  end)
+
+  -- ESCMenu integration (optional). With the ESCMenu addon installed this is
+  -- our settings row in its menu; without it, the queue is inert data and the
+  -- michaelClient panel above is what players see. The name matches the
+  -- AddAddon title EXACTLY so ESCMenu dedupes the two registrations (this one
+  -- wins). Registered from main.lua on purpose: require'd modules write
+  -- globals into a private environment and ESCMenu would never see it.
+  pcall(function()
+    ESCMenu = ESCMenu or {}
+    ESCMenu.queue = ESCMenu.queue or {}
+    table.insert(ESCMenu.queue, {
+      name = "BetterBars",
+      callback = function()
+        local settings_page = require("BetterBars/settings_page")
+        if settings_page and settings_page.openSettingsWindow then
+          pcall(function() settings_page.openSettingsWindow() end)
+        end
+      end,
+    })
   end)
 end
 ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------

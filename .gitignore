@@ -13,3 +13,4 @@ desktop.ini
 # Addon runtime output
 *.log
 bbdebug_dump.txt
+bbinfo_dump.txt
