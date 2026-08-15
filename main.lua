@@ -6,7 +6,7 @@ local BetterBars = {
   -- is ready - api.GetSettings then hands back a detached empty table, the
   -- whole session runs on defaults (welcome card included), and the first
   -- save overwrites the player's real file. That was the every-login reset.
-  version = "3.1",
+  version = "3.2",
   author = "Dehling",
   desc = "Improves the look of vanilla unit frames"
 }
@@ -2180,6 +2180,36 @@ local function OnLoad()
   -- Silently does nothing for classes without the high-ability feature set,
   -- which is most of them - the bar simply is not created for those.
   pcall(function() require("BetterBars/abyssal").Setup() end)
+
+  -- Abyssal watchdog. Two dead spots need a heartbeat: on a fresh login the
+  -- client often creates the bubble bar AFTER OnLoad, and without this the
+  -- restyle only engaged when a settings change happened to call Refresh - a
+  -- whole session could run vanilla with showAbyssal saved ON, which read as
+  -- "my setting did not save". And a transient resource-info dropout (mount
+  -- transitions swap the ability set) now holds instead of hiding, so
+  -- something must repaint once the info recovers even if no charge changes.
+  -- Every 2s is plenty, and repaint is idempotent (pip drawables are cached
+  -- per icon), so a tick costs a handful of pcalls.
+  --
+  -- The token gates staleness across /reload: api.On has no api.Off, so this
+  -- handler fires forever, including from dead sessions. api.GetSettings is
+  -- read LIVE each tick - it always reaches the CURRENT engine table, the
+  -- one object both the old and the new load can see - and a handler whose
+  -- token is no longer the one stamped there goes silent.
+  do
+      local watchToken = {}
+      local eng = api.GetSettings("BetterBars")
+      if type(eng) == "table" then eng.bbWatchToken = watchToken end
+      local watchMs = 0
+      onEvent("UPDATE", function(dt)
+          watchMs = watchMs + (dt or 0)
+          if watchMs < 2000 then return end
+          watchMs = 0
+          local e = api.GetSettings("BetterBars")
+          if type(e) ~= "table" or e.bbWatchToken ~= watchToken then return end
+          pcall(function() require("BetterBars/abyssal").Refresh() end)
+      end)
+  end
 
   UpdateFrameStyles()
 

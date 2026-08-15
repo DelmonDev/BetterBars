@@ -3,6 +3,66 @@ local default_settings = require("BetterBars/default_settings")
 
 local settings = {}
 
+-- ============================================================================
+-- Private persistence (3.2)
+--
+-- BetterBars' settings no longer live in the client's shared `addon_settings`
+-- file. That file is one blob for every addon, and the client rewrites it
+-- non-atomically: File:Write opens with "w" - truncating the file on the
+-- spot - and only THEN serializes the table. A death between those two steps
+-- (an out-of-memory failure inside the serializer is exactly what a long
+-- session on the 32-bit client produces) leaves a 0-byte file, and on the
+-- next boot the client silently replaces it with `{enabled=true}` defaults
+-- for EVERY addon and rewrites it, making the loss permanent. Diagnosed from
+-- a player's crash logs (Aug 2026); power_ranger_on ships the same defense
+-- for the same reason.
+--
+-- So BetterBars keeps its own file pair. api.SaveSettings() is called at
+-- most ONCE per install - the boot-time flush that purges its legacy branch
+-- from the shared file (see scrubEngineBranch) - and never on a gameplay
+-- path: it can neither suffer that wipe nor put the shared file at risk
+-- when it matters. The shared store is still READ once to
+-- migrate a pre-3.2 save, and still owns the addon manager's `enabled` flag.
+--
+-- Both files live at the Addon ROOT (next to `addon_settings`, outside the
+-- BetterBars folder): the File API is rooted there, the root always exists
+-- (File:Write creates no directories), and root files survive addon updates
+-- and even full delete-and-reinstalls.
+-- ============================================================================
+local SETTINGS_PATH = "BetterBars_settings.lua"
+local BACKUP_PATH = "BetterBars_settings_backup.lua"
+
+-- Read one private file defensively. File:Read RAISES on a file that exists
+-- but no longer deserializes (the truncated-by-a-crash case), so the pcall is
+-- load-bearing, not paranoia. Only a non-empty table counts as a usable save;
+-- `next` is not in the sandbox whitelist, so emptiness is probed with pairs.
+local function readPrivate(path)
+    local ok, data = pcall(function() return api.File:Read(path) end)
+    if not ok or type(data) ~= "table" then return nil end
+    for _ in pairs(data) do return data end
+    return nil
+end
+
+-- Plain deep copy, for migrating the engine's table. The migration used to
+-- alias it (saved = engine), which was harmless while the engine branch was
+-- left alone - but the scrub below empties that branch, and gutting a table
+-- the live settings alias would take the session down with it.
+local function deepCopy(tbl, seen)
+    seen = seen or {}
+    if seen[tbl] then return nil end
+    seen[tbl] = true
+    local out = {}
+    for k, v in pairs(tbl) do
+        if type(v) == "table" then
+            out[k] = deepCopy(v, seen)
+        else
+            out[k] = v
+        end
+    end
+    seen[tbl] = nil
+    return out
+end
+
 -- Deep merge saved settings with defaults (nil-checks preserve false)
 -- Set by the one-time forced reset so the marker persists even if the player
 -- never touches a setting that session (otherwise the wipe would re-run each
@@ -181,38 +241,98 @@ local function mergeSettings(saved)
     return saved
 end
 
--- Forward declaration: loadSettings persists the forced-reset marker through
--- saveSettings, which is defined below it.
+-- Scrub the engine's branch down to the bare `enabled` flag the addon
+-- manager owns. power_ranger_on's stance, adopted here too (user call):
+-- once the private pair is the source of truth, nothing of ours belongs in
+-- the shared file - no replica, and no stale copy from earlier builds
+-- lingering there. The accepted trade: if BOTH private files are ever lost
+-- at once, the migration path finds nothing and the addon starts from
+-- defaults. Runs after every load and save, so a branch populated by an
+-- older build empties on the first boot of this one. One session-state
+-- exception rides along: bbWatchToken, the abyssal watchdog's staleness
+-- token, lives on this table precisely BECAUSE it is the one object every
+-- load can reach - scrubbing it would un-gate dead sessions' handlers.
+local function scrubEngineBranch()
+    local engineTable = api.GetSettings("BetterBars")
+    if type(engineTable) ~= "table" then return end
+    local removed = 0
+    for key in pairs(engineTable) do
+        if key ~= "enabled" and key ~= "bbWatchToken" then
+            engineTable[key] = nil
+            removed = removed + 1
+        end
+    end
+    -- One-shot flush. Scrubbing only empties the IN-MEMORY table; the file
+    -- is rewritten by the client at boot BEFORE addons load, so it keeps
+    -- copying the stale branch back, and if no other addon ever saves
+    -- mid-session the stale keys would sit on disk forever. When the scrub
+    -- actually removed something - which after the transition boot it never
+    -- does again, the branch arrives bare - flush the file once. A single
+    -- boot-time write per install, when memory is fresh; gated on a REAL
+    -- engine read (`enabled` stamp) so it can never fire from the parse-time
+    -- detached table, where a save would serialize a half-built store.
+    if removed > 0 and engineTable.enabled ~= nil then
+        pcall(function() api.SaveSettings() end)
+    end
+end
+
+-- Forward declaration: loadSettings persists the forced-reset marker and the
+-- migration/heal writes through saveSettings, which is defined below it.
 local saveSettings
 
--- Load settings from saved variables
+-- Load settings: primary file, then backup, then the shared store (a pre-3.2
+-- save, or a fresh install's bare `{enabled=true}`), then defaults.
 local function loadSettings()
-    local saved = api.GetSettings("BetterBars")
-    settings = mergeSettings(saved or {})
-    -- Persist the one-time forced reset as soon as it ran against a REAL
-    -- settings table. loadSettings runs again from OnLoad when the engine
-    -- store is ready, so a too-early empty read never triggers this.
-    if needsPostResetSave then
+    local saved = readPrivate(SETTINGS_PATH)
+    local needsSave = false
+    if saved == nil then
+        saved = readPrivate(BACKUP_PATH)
+        if saved ~= nil then
+            -- Primary lost or corrupt but the mirror survived: heal it back.
+            needsSave = true
+        end
+    end
+    if saved == nil then
+        local engine = api.GetSettings("BetterBars")
+        -- `enabled` is how a REAL engine read is told apart from the
+        -- parse-time one: the client stamps `{enabled=true}` on every entry
+        -- when its store initializes, while a require at chunk time gets a
+        -- detached empty table (the store isn't loaded yet). Migrating THAT
+        -- would freeze defaults into the private file, shadowing the
+        -- player's real save forever - so only a real read migrates; the
+        -- OnLoad re-run of loadSettings does it against the ready store.
+        if engine ~= nil and engine.enabled ~= nil then
+            saved = deepCopy(engine)
+            needsSave = true
+        else
+            -- Copied even on the parse-time detached read: settings must
+            -- never alias the engine table now that scrubEngineBranch
+            -- empties it - the scrub would gut the defaults just merged in.
+            saved = (engine ~= nil and deepCopy(engine)) or {}
+        end
+    end
+    settings = mergeSettings(saved)
+    if needsSave or needsPostResetSave then
         needsPostResetSave = false
         pcall(saveSettings)
     end
+    -- Ordinary boots save nothing, so the cleanup runs here too. The
+    -- migration copy above happened BEFORE this (deepCopy, never an alias),
+    -- so emptying the engine branch cannot touch the live settings.
+    pcall(scrubEngineBranch)
     return settings
 end
 
--- Save current settings (syncs local table into engine table for reliable persistence)
+-- Save current settings to the private pair. Backup FIRST: if the process
+-- dies mid-write (the crash that motivated all this), dying during the
+-- backup write leaves the previous primary intact, and dying during the
+-- primary write leaves a fresh backup to heal from on the next boot. Either
+-- order keeps one good copy; backup-first just makes the surviving copy the
+-- fresher one.
 saveSettings = function()
-    local engineTable = api.GetSettings("BetterBars")
-    if not engineTable then
-        engineTable = {}
-    end
-    -- Copy every setting we hold into the engine's tracked table. This used to
-    -- name each field, which meant adding a setting took three edits - defaults,
-    -- merge, and here - and forgetting this one made the setting work all
-    -- session and silently vanish on reload.
-    for key, value in pairs(settings) do
-        engineTable[key] = value
-    end
-    api.SaveSettings()
+    pcall(function() api.File:Write(BACKUP_PATH, settings) end)
+    pcall(function() api.File:Write(SETTINGS_PATH, settings) end)
+    pcall(scrubEngineBranch)
     -- api:Emit, not api.Emit. The API declares it as `function ADDON_API:Emit`,
     -- so a dot call passes the event name as self and leaves the event nil -
     -- this never fired, which is why every settings change needed a reload
@@ -270,8 +390,12 @@ local function resetToDefaults()
     saveSettings()
 end
 
--- Initialize settings (may be a too-early read; OnLoad re-runs loadSettings
--- against the ready store)
+-- Initialize settings. Once the private file exists this parse-time read
+-- already returns the player's real save (File:Read works at chunk time; the
+-- Addon-root baseDir is set before chunks run). On the one boot where it
+-- doesn't exist yet - first run after the 3.2 update, or a fresh install -
+-- this read comes up short and the OnLoad re-run migrates from the engine
+-- store once it is ready.
 loadSettings()
 
 return {

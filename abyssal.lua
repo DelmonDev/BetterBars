@@ -73,6 +73,16 @@ local lastEnabled = nil
 -- which lands back in ours.
 local restoring = false
 
+-- Session ownership token. The client's bubble bar frame - and everything
+-- stamped on it, including our hook closures - survives /reload, while this
+-- module is recreated fresh. The old closures kept firing with the OLD
+-- session's settings module, so toggling or resizing abyssal after a reload
+-- had two sessions fighting over the art: changes appeared to revert and
+-- pips flickered off. Each load stamps the frame with its own token (a table,
+-- unique by identity); repaints from a load that no longer owns the frame go
+-- inert.
+local myToken = {}
+
 local function settings()
     return require("BetterBars/settings").getSettings()
 end
@@ -230,6 +240,7 @@ end
 -- Repaint every slot from the live resource.
 local function repaint()
     if not frame or not frame.icons or restoring then return end
+    if frame.bbAbyssToken ~= myToken then return end
     local s = settings()
     -- Explicit true, not "anything but false". The restyle is opt-in as of the
     -- 3.1 release, and a settings table read before mergeSettings fills the
@@ -265,7 +276,14 @@ local function repaint()
 
     local info
     pcall(function() info = api.Unit:GetHighAbilityRscInfo() end)
-    local maxRsc = (type(info) == "table" and tonumber(info.maxHighAbilityRsc)) or 0
+    -- Hold, don't hide, when the API hands back nothing: mount transitions
+    -- swap the ability set and the info can vanish for a few frames. Hiding
+    -- here STUCK, because the client only repaints when the charge count
+    -- next CHANGES - the bar sat empty until then, which is the reported
+    -- auto-hiding. The watchdog in main.lua repaints within 2s of the info
+    -- recovering even if no charge moves.
+    if type(info) ~= "table" then return end
+    local maxRsc = tonumber(info.maxHighAbilityRsc) or 0
     -- Floored to whole charges, exactly as the client does.
     --
     -- The engine reports the resource x100 and it moves CONTINUOUSLY;
@@ -274,7 +292,7 @@ local function repaint()
     -- in-between. Drawing the raw value instead made a spent charge shrink away
     -- over several frames rather than snapping off - accurate to the data, but
     -- soft and unreadable next to vanilla's instant blink.
-    local cur = (type(info) == "table" and tonumber(info.highAbilityPreciseRsc)) or 0
+    local cur = tonumber(info.highAbilityPreciseRsc) or 0
     cur = math.floor(cur / 100)
 
     -- Geometry shared by every slot, resolved once. The cell PITCH is the icon
@@ -343,7 +361,12 @@ end
 -- ShowBubbleActionBar also fires on scale change and on the client's own
 -- BUBBLE_ACTION_BAR_SHOW event, so hooking it covers re-layout for free.
 local function hookRepaint(name)
-    local orig = frame[name]
+    -- Wrap from the STORED original, not from frame[name]: after a /reload
+    -- frame[name] is the previous session's wrapper, and wrapping that would
+    -- grow the chain by one dead layer per reload. Re-wrapping from the
+    -- original replaces the old wrapper outright - constant depth, and the
+    -- old session's closure simply stops being called.
+    local orig = frame.bbAbyssOrig and frame.bbAbyssOrig[name]
     if type(orig) ~= "function" then return false end
     if name == "ShowBubbleActionBar" then origShow = orig end
     frame[name] = function(self, ...)
@@ -363,12 +386,18 @@ Setup = function()
         return false
     end
     frame = got
-    if frame.bbAbyssHooked then
-        repaint()
-        return true
-    end
-    frame.bbAbyssHooked = true
+    -- Take ownership: repaints from previous loads go inert (see myToken).
+    frame.bbAbyssToken = myToken
     pcall(function()
+        -- The TRUE originals, captured exactly once ever. On a frame an older
+        -- build already wrapped (bbAbyssHooked without bbAbyssOrig), what we
+        -- see IS that build's wrapper and one stale layer stays in the chain
+        -- until a full client restart; every session after this build
+        -- re-wraps from the stored originals at constant depth.
+        frame.bbAbyssOrig = frame.bbAbyssOrig or {
+            ShowBubbleActionBar = frame.ShowBubbleActionBar,
+            UpdateBubbleActionBar = frame.UpdateBubbleActionBar,
+        }
         hookRepaint("ShowBubbleActionBar")
         hookRepaint("UpdateBubbleActionBar")
     end)

@@ -35,7 +35,7 @@ end
 -- Single source of the addon version for the credit label; main.lua's
 -- manifest carries the same literal (kept in sync by hand - requiring this
 -- module at parse time caused the every-login reset bug).
-local ADDON_VERSION = "3.1"
+local ADDON_VERSION = "3.2"
 
 -- Aborts the enclosing pcall - the sandbox has no error()/assert(); indexing a
 -- nil is the only deliberate raise available. See BBFail in main.lua.

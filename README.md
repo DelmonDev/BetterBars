@@ -12,6 +12,22 @@ Vanilla frames on top, BetterBars underneath:
 
 ![BetterBars settings window](https://github.com/user-attachments/assets/ecb0c7f9-f81d-446c-b86e-183886a588e0)
 
+## What's new in 3.2
+
+- **Crash-proof settings** — your configuration now lives in its own file pair
+  (`BetterBars_settings.lua` plus a backup mirror, next to the game's
+  `addon_settings` file) instead of the shared store that every addon writes.
+  A client crash could truncate that shared file mid-write, and the game then
+  silently reset **every** addon to defaults on the next launch. BetterBars
+  now survives that: it restores from its own files, heals a corrupted copy
+  from the mirror, and migrates your existing settings automatically on first
+  launch. Your layout also now survives addon updates and reinstalls.
+- **Abyssal fixes** — the custom charge pips no longer vanish after mounting
+  (a transient game-data dropout used to hide them until your next charge
+  change), no longer fail to appear on a fresh login when the charge bar is
+  created late, and settings changes made after a `/reload` stick instead of
+  fighting a stale copy of the addon left from before the reload.
+
 ## What's new in 3.1
 
 - **Vanilla anchoring** — the bars sit exactly where the client puts them, so
